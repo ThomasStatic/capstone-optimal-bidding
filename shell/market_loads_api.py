@@ -35,8 +35,8 @@ class ISODemandController:
                         "Received HTTP 403 Forbidden from EIA.\n"
                         "This usually means your API key is invalid, missing, or not authorized.\n\n"
                         "Check that:\n"
-                        "  • You created a .env file with a valid EIA_API_KEY\n"
-                        "  • You are loading EIA_API_KEY into `self.__api_key`\n"
+                        "  • You created a .env file with a valid EIA_KEY\n"
+                        "  • You are loading EIA_KEY into `self.__api_key`\n"
                         "  • The key has not expired or been revoked."
                     ) from e
             df_iso = pd.DataFrame(r.json()["response"]["data"])
