@@ -27,7 +27,18 @@ class ISODemandController:
                 },
                 timeout=60
             )
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                if r.status_code == 403:
+                    raise RuntimeError(
+                        "Received HTTP 403 Forbidden from EIA.\n"
+                        "This usually means your API key is invalid, missing, or not authorized.\n\n"
+                        "Check that:\n"
+                        "  • You created a .env file with a valid EIA_API_KEY\n"
+                        "  • You are loading EIA_API_KEY into `self.__api_key`\n"
+                        "  • The key has not expired or been revoked."
+                    ) from e
             df_iso = pd.DataFrame(r.json()["response"]["data"])
             df_iso["period"] = pd.to_datetime(df_iso["period"], utc=True)
             df_iso.rename(columns={"value":"load_MW"}, inplace=True)
