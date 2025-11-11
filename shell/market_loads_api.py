@@ -41,7 +41,7 @@ class ISODemandController:
                     ) from e
             df_iso = pd.DataFrame(r.json()["response"]["data"])
             df_iso["period"] = pd.to_datetime(df_iso["period"], utc=True)
-            df_iso.rename(columns={"value":"load_MW"}, inplace=True)
+            df_iso.rename(columns={"value":"load_MWH"}, inplace=True)
             df_iso["respondent"] = iso
             print(len(df_iso), "rows from EIA")
             print(df_iso[["period","load_MW","respondent"]])
