@@ -20,7 +20,7 @@ class ISODemandController:
                 params={
                     "api_key": self.__api_key,
                     "frequency": "hourly",
-                    "facets[respondent][]": iso,
+                    "facets[respondent][]": self.ISOs[iso],
                     "data[0]": "value",
                     "facets[type][]": "D",  # Demand (load)
                     "start": self.start, "end": self.end, "sort[0][column]": "period", "sort[0][direction]": "asc"
