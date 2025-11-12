@@ -44,6 +44,6 @@ class ISODemandController:
             df_iso.rename(columns={"value":"load_MWH"}, inplace=True)
             df_iso["respondent"] = iso
             print(len(df_iso), "rows from EIA")
-            print(df_iso[["period","load_MW","respondent"]])
+            print(df_iso[["period","load_MWH","respondent"]])
             df = pd.concat([df, df_iso], ignore_index=True)
-        return df[["period","load_MW","respondent"]]
+        return df[["period","load_MWH","respondent"]]
