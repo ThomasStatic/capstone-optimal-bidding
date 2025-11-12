@@ -21,7 +21,7 @@ class EnverusAPI:
 
         response = requests.post(url, json=data, headers=headers)
         response.raise_for_status()  # Raise an error for bad responses
-        print(response.json().get("token"))
+        self._token = response.json().get("token", "")
 
         if not self._token:
             raise ValueError("Failed to retrieve token from response")
