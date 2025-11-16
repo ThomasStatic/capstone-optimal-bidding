@@ -23,7 +23,7 @@ class SARIMAXLoadProjections:
         '''Prepare historical load data for SARIMAX modeling.'''
         # Convert 'period' to UTC and remove timezone info
         self._y = (self._historic_data.assign(period=lambda x: x['period'].dt.tz_convert("UTC").dt.tz_localize(None))
-                .set_index('period').sort_index()["load_MWH"].asfreq('H'))
+                .set_index('period').sort_index()["load_MWH"].asfreq('h'))
         
         # Fill in missing time periods by interpolating values
         self._y = self._y.interpolate(limit_direction='both')
