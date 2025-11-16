@@ -3,11 +3,12 @@ from pandas import DataFrame, Series
 import pandas as pd
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import numpy as np
+import matplotlib.pyplot as plt
 
 class SARIMAXLoadProjections:
     _historic_data: DataFrame
-    _y: Series[Any]
-    y_trans: Series[Any]
+    _y: Any
+    y_trans: Any
     X_daily: DataFrame
     exogenous_df: DataFrame
     
@@ -18,6 +19,12 @@ class SARIMAXLoadProjections:
         # Because we are working with assumption that the weekly seasonality is stronger
         # than the daily seasonality in load data, we only include Fourier terms for daily seasonality.
         self.set_fourier_terms(self._y.index, period=24, K=3)
+
+        self.set_exogenous_df()
+
+        self.fit_sarimax_model()
+
+
 
     def _prepare_historical_data(self):
         '''Prepare historical load data for SARIMAX modeling.'''
@@ -50,3 +57,40 @@ class SARIMAXLoadProjections:
         calendar_df = pd.get_dummies(calendar_df, columns=['dow', 'hour'], drop_first=True)
 
         self.exogenous_df = pd.concat([self.X_daily, calendar_df], axis=1)
+
+    def fit_sarimax_model(self):
+        '''Fit SARIMAX model to the transformed load data.'''
+        train_end = self.y_trans.index.max() - pd.Timedelta(days=14)
+        y_tr, y_te = self.y_trans[:train_end], self.y_trans[train_end + pd.Timedelta(hours=1):]
+        
+        exog_tr, exog_te = self.exogenous_df.loc[y_tr.index], self.exogenous_df.loc[y_te.index]
+        exog_tr = exog_tr.astype(float) # Ensure exogenous variables are float type as numpy causes errors otherwise
+        exog_te = exog_te.astype(float)
+
+        model = SARIMAX(
+            y_tr,
+            exog=exog_tr,
+            order=(1,1,1),
+            seasonal_order=(1,1,1,24), # 24 = daily seasonality for hourly data
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+
+        print("Fitting SARIMAX model... this may take a while.")
+        fitted_model: Any = model.fit(disp=False) # typed as Any to avoid interpretter issues (statsmodels types are not always well defined)
+        print("SARIMAX model fitted.")
+        print(fitted_model.summary())
+
+        fitted_model.plot_diagnostics(figsize=(10, 16))
+        plt.show()
+
+        # Forecast the next 24 hours
+        steps = 24
+        forecast = fitted_model.get_forecast(steps=steps)
+        forcast_ci = forecast.conf_int()
+        df_forecast = pd.DataFrame({
+            'forecast': forecast.predicted_mean,
+            'lower_ci': forcast_ci.iloc[:, 0],
+            'upper_ci': forcast_ci.iloc[:, 1]
+        })
+        print(df_forecast)
