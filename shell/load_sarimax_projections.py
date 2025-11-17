@@ -18,12 +18,11 @@ class SARIMAXLoadProjections:
 
         # Because we are working with assumption that the weekly seasonality is stronger
         # than the daily seasonality in load data, we only include Fourier terms for daily seasonality.
-        self.set_fourier_terms(self._y.index, period=24, K=3)
+        self._set_fourier_terms(self._y.index, period=24, K=3)
+    
+        self._set_exogenous_df()
 
-        self.set_exogenous_df()
-
-        self.fit_sarimax_model()
-
+        self._fit_sarimax_model()
 
 
     def _prepare_historical_data(self):
@@ -39,7 +38,7 @@ class SARIMAXLoadProjections:
         # Apply a log transformation to stabilize variance
         self.y_trans = Series(np.log(self._y.clip(lower=1)), index=self._y.index, name="load_MWH_log")
 
-    def set_fourier_terms(self, index, period, K):
+    def _set_fourier_terms(self, index, period, K):
         '''Generate Fourier terms for seasonal components.'''
         t = np.arange(len(index))
         
@@ -47,7 +46,7 @@ class SARIMAXLoadProjections:
         X |= {f'cos_{period}_{k}': np.cos(2 * np.pi * k * t / period) for k in range(1, K + 1)}
         self.X_daily = DataFrame(X, index=index)
 
-    def set_exogenous_df(self):
+    def _set_exogenous_df(self):
         '''Add calendar features to the exogenous dataframe.'''
         calendar_df = DataFrame(index=self.y_trans.index)
         date_index = pd.DatetimeIndex(calendar_df.index)
@@ -58,7 +57,7 @@ class SARIMAXLoadProjections:
 
         self.exogenous_df = pd.concat([self.X_daily, calendar_df], axis=1)
 
-    def fit_sarimax_model(self):
+    def _fit_sarimax_model(self):
         '''Fit SARIMAX model to the transformed load data.'''
         train_end = self.y_trans.index.max() - pd.Timedelta(days=14)
         y_tr, y_te = self.y_trans[:train_end], self.y_trans[train_end + pd.Timedelta(hours=1):]
@@ -86,7 +85,9 @@ class SARIMAXLoadProjections:
 
         # Forecast the next 24 hours
         steps = 24
-        forecast = fitted_model.get_forecast(steps=steps)
+        exog_future = exog_te.iloc[:steps].astype(float) # we only need exogenous variables for the forecast horizon
+
+        forecast = fitted_model.get_forecast(steps=steps, exog=exog_future)
         forcast_ci = forecast.conf_int()
         df_forecast = pd.DataFrame({
             'forecast': forecast.predicted_mean,
