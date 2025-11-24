@@ -63,3 +63,6 @@ class TabularQLearningAgent:
             target = reward + self.gamma * np.max(self.Q[next_state_key])
 
         self.Q[state_key][action] += quality_current + self.alpha * (target - quality_current)
+
+    def decay_epsilon(self) -> None:
+        self.epsilon *= self.epsilon_decay
