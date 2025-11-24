@@ -34,5 +34,21 @@ class TabularQLearningAgent:
         if key not in self.Q:
             self.Q[key] = np.zeros(self.num_actions, dtype=float)
     
-    
+
+    def select_action(self, state_key: StateKey) -> int:
+        self._ensure_state(state_key)
+
+        # Exploration
+        if self._rng.random() < self.epsilon:
+            return int(self._rng.integers(0, self.num_actions))
         
+        # Exploitation
+        else:
+            q_values = self.Q[state_key]
+
+            # tie breaking
+            max_q = np.max(q_values)
+            best_actions = np.flatnonzero(q_values == max_q)
+            return int(self._rng.choice(best_actions))
+        
+    
