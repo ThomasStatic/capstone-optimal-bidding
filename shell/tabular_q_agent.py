@@ -51,4 +51,15 @@ class TabularQLearningAgent:
             best_actions = np.flatnonzero(q_values == max_q)
             return int(self._rng.choice(best_actions))
         
-    
+    def update_q_table(self, state_key: StateKey, action: int, reward: float, next_state_key: StateKey, done: bool) -> None:
+        self._ensure_state(state_key)
+        
+        quality_current = self.Q[state_key][action]
+
+        if done or next_state_key is None:
+            target = reward
+        else:
+            self._ensure_state(next_state_key)
+            target = reward + self.gamma * np.max(self.Q[next_state_key])
+
+        self.Q[state_key][action] += quality_current + self.alpha * (target - quality_current)
