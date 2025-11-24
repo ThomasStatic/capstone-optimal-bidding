@@ -1,11 +1,12 @@
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional, Sequence
+from typing import Dict, Tuple, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
 # Our State object currently produces Pandas row of discrete values, so needs to be converted to a hashable type
 StateKey = Tuple[int, ...]
+StateVec = Union[np.ndarray, pd.Series]
 
 @dataclass
 class TabularQLearningAgent:
@@ -21,12 +22,12 @@ class TabularQLearningAgent:
     def __post_init__(self):
         self._rng = np.random.default_rng()
 
-    def state_to_key(self, state_row: pd.Series, columns: Optional[Sequence[str]] = None) -> StateKey:
+    def state_to_key(self, state_vec: StateVec) -> StateKey:
         """Convert a state representation to a hashable StateKey."""
-        if columns is None:
-            vals = state_row.to_numpy()
+        if isinstance(state_vec, pd.Series):
+            vals = state_vec.to_numpy()
         else:
-            vals = state_row.loc[list(columns)].to_numpy()
+            vals = state_vec
         
         return tuple(int(v) for v in vals)
     
