@@ -51,7 +51,8 @@ class State:
         else:
             self.vars = aligned[0].join(aligned[1:], how="outer")
 
-        self.vars.sort_index(inplace=True)
+        if isinstance(self.vars, pd.DataFrame):
+            self.vars.sort_index(inplace=True)
 
     def apply(self):
         """
