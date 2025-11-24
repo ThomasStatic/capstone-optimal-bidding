@@ -9,6 +9,7 @@ StateKey = Tuple[int, ...]
 
 @dataclass
 class TabularQLearningAgent:
+    num_actions: int
     alpha: float = 0.1  # Learning rate
     gamma: float = 0.99  # Discount factor
     epsilon: float = 0.1  # Exploration rate
@@ -29,7 +30,9 @@ class TabularQLearningAgent:
         
         return tuple(int(v) for v in vals)
     
+    def _ensure_state(self, key: StateKey) -> None:
+        if key not in self.Q:
+            self.Q[key] = np.zeros(self.num_actions, dtype=float)
     
     
-
         
