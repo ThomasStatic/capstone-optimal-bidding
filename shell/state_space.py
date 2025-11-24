@@ -30,6 +30,12 @@ class State:
         self.timestamps = []
         self.ptr = 0  # current step index
 
+        self.window_days = 14
+        self.step_hours = 24  # 1 day shift per episode
+        self.window_size = self.window_days * 24  # 336 rows (hourly)
+        self.episode_start = 0
+
+
     def load_plant_data(self, df: pd.DataFrame, index_col="plant_id"):
         """Loads raw plant data.
 
@@ -159,14 +165,22 @@ class State:
         # Final dataframe
         ordered_cols = vars_list + ["time_of_day"]
         self.state_vars = ordered_cols
-        self.state_data = pd.DataFrame(out_cols).reindex(self.raw_state_data.index)[ordered_cols]
+        full_state = pd.DataFrame(out_cols).reindex(self.raw_state_data.index)[ordered_cols]
+
+        if len(full_state) < self.window_size:
+            raise ValueError(f"Not enough data for {self.window_days}-day window")
+
+        start = self.episode_start
+        end = start + self.window_size
+
+        self.state_data = full_state.iloc[start:end]
 
         self.timestamps = list(self.state_data.index)
         self.ptr = 0
 
         return self.state_data
 
-    def reset(self):
+    def reset(self, new_episode: bool = True):
         """Reset environment to starting state.
 
         Raises:
@@ -178,6 +192,15 @@ class State:
         if self.state_data is None:
             raise RuntimeError("Call apply() before reset().")
 
+        if new_episode:
+            self.episode_start += self.step_hours
+
+            max_start = len(self.raw_state_data) - self.window_size
+            if self.episode_start > max_start:
+                self.episode_start = 0  # optional: loop back
+
+            self.apply()
+            
         self.ptr = 0
         return self.current_row().values
 
@@ -191,11 +214,12 @@ class State:
 
         self.ptr += 1
 
-        if self.ptr >= len(self.state_data):
-            self.ptr = len(self.state_data) - 1
+        if self.ptr >= len(self.state_data) - 1:
             done = True
+            self.ptr = len(self.state_data) - 1
         else:
             done = False
+
 
         next_state = self.current_row().values
 
@@ -304,21 +328,42 @@ if __name__ == "__main__":
         "gas": df_gas
     })
 
+    # Apply first episode window (first 14 days)
     state.apply()
 
-    # --- RL interaction example ---
-    obs = state.reset()
-    print("Initial state:", obs)
+    # Number of episodes to simulate
+    n_episodes = 5
 
-    done = False
-    step_counter = 0
+    for episode in range(n_episodes):
 
-    while not done and step_counter < 10:
-        action = None  # placeholder
-        obs, reward, done, info = state.step(action)
+        print(f"\n====== EPISODE {episode+1} ======")
 
-        print(f"\nStep {step_counter+1}")
-        print("State:", obs)
-        print("Time:", info["timestamp"])
+        # Shift window forward by 1 day after first episode
+        if episode == 0:
+            obs = state.reset(new_episode=False)
+        else:
+            obs = state.reset(new_episode=True)
 
-        step_counter += 1
+        print("Initial state:", obs)
+        print("Window start:", state.current_time())
+        print("Window end:", state.timestamps[-1])
+
+        done = False
+        step_counter = 0
+
+        while not done:
+            action = None  # Placeholder
+
+            obs, reward, done, info = state.step(action)
+
+            # Print every 24 steps (once per day)
+            if step_counter % 24 == 0 or done:
+                print(
+                    f"Step {step_counter:3} | "
+                    f"Time: {info['timestamp']} | "
+                    f"State: {obs}"
+                )
+
+            step_counter += 1
+
+        print(f"Episode finished in {step_counter} steps")
