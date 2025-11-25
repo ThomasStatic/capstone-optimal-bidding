@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Tuple
 
+import numpy as np
+
 
 @dataclass
 class ActionSpace:
@@ -8,33 +10,30 @@ class ActionSpace:
     Discrete action space for bidding in the power market.
 
     Each action corresponds to a (price, quantity) pair, where both dimensions
-    are discretized by separate 1D discretizers.
 
-    We assume each discretizer object provides:
-        - n_bins: int
-        - to_index(value: float) -> int
-        - from_index(index: int) -> float
     """
 
-    price_disc: Any       # discretizer for bid price
-    quantity_disc: Any    # discretizer for bid quantity
+    price_disc: Any       # fitted discretizer for bid price
+    quantity_disc: Any    # fitted discretizer for bid quantity
 
     def __post_init__(self) -> None:
-        # Minimal sanity checks that the required attributes/methods exist.
-        for name, disc in (("price_disc", self.price_disc), ("quantity_disc", self.quantity_disc)):
-            if not hasattr(disc, "n_bins"):
-                raise TypeError(f"{name} is missing 'n_bins' attribute.")
-            if not hasattr(disc, "to_index"):
-                raise TypeError(f"{name} is missing 'to_index(value: float) -> int' method.")
-            if not hasattr(disc, "from_index"):
-                raise TypeError(f"{name} is missing 'from_index(index: int) -> float' method.")
+        # Check that the discretizers look fitted and have edges_
+        for name, disc in (("price_disc", self.price_disc),
+                           ("quantity_disc", self.quantity_disc)):
+            if not hasattr(disc, "edges_"):
+                raise TypeError(f"{name} is missing 'edges_' attribute; expected a fitted discretizer.")
+            if disc.edges_ is None:
+                raise ValueError(f"{name}.edges_ is None; call fit(...) on the discretizer before using ActionSpace.")
+            if len(disc.edges_) < 2:
+                raise ValueError(f"{name}.edges_ must have at least 2 entries (one bin).")
 
-        self.n_price_bins: int = int(self.price_disc.n_bins)
-        self.n_quantity_bins: int = int(self.quantity_disc.n_bins)
+        # Number of bins is implied by the edges: n_bins = len(edges) - 1
+        self.n_price_bins: int = len(self.price_disc.edges_) - 1
+        self.n_quantity_bins: int = len(self.quantity_disc.edges_) - 1
         self.n_actions: int = self.n_price_bins * self.n_quantity_bins
 
         if self.n_price_bins <= 0 or self.n_quantity_bins <= 0:
-            raise ValueError("Both price_disc.n_bins and quantity_disc.n_bins must be positive.")
+            raise ValueError("Both price and quantity discretizers must define at least one bin.")
 
     def pair_to_index(self, price_bin: int, quantity_bin: int) -> int:
         """
@@ -71,19 +70,38 @@ class ActionSpace:
         """
         Convert a continuous (price, quantity) pair into a discrete action index.
 
-        The exact bucketing behaviour (bin boundaries, clipping, etc.) is
-        determined entirely by the underlying discretizers.
+        Uses the fitted bin edges from the discretizers and np.digitize to
+        assign each value to a bin, then flattens (price_bin, quantity_bin)
+        into a single action index.
         """
-        p_bin = self.price_disc.to_index(price)
-        q_bin = self.quantity_disc.to_index(quantity)
-        return self.pair_to_index(p_bin, q_bin)
+        # Map price to a price bin
+        p_idx = np.digitize([price], self.price_disc.edges_)[0] - 1
+        p_idx = int(np.clip(p_idx, 0, self.n_price_bins - 1))
+
+        # Map quantity to a quantity bin
+        q_idx = np.digitize([quantity], self.quantity_disc.edges_)[0] - 1
+        q_idx = int(np.clip(q_idx, 0, self.n_quantity_bins - 1))
+
+        return self.pair_to_index(p_idx, q_idx)
 
     def decode_to_values(self, action_index: int) -> Tuple[float, float]:
         """
         Convert an action index back into representative (price, quantity)
-        values defined by the discretizers.
+        values defined by the bin edges.
+
+        The representative value for a bin is taken as the centre of the bin:
+            (left_edge + right_edge) / 2.
         """
         p_bin, q_bin = self.index_to_pair(action_index)
-        price = self.price_disc.from_index(p_bin)
-        quantity = self.quantity_disc.from_index(q_bin)
-        return price, quantity
+
+        # Price value = centre of its bin
+        p_left = self.price_disc.edges_[p_bin]
+        p_right = self.price_disc.edges_[p_bin + 1]
+        price = 0.5 * (p_left + p_right)
+
+        # Quantity value = centre of its bin
+        q_left = self.quantity_disc.edges_[q_bin]
+        q_right = self.quantity_disc.edges_[q_bin + 1]
+        quantity = 0.5 * (q_left + q_right)
+
+        return float(price), float(quantity)
