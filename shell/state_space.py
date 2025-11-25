@@ -93,9 +93,10 @@ class State:
             self.raw_state_data.sort_index(inplace=True)
 
         if self.raw_state_data is not None:
+            IGNORED_COLS = {"lower_ci", "upper_ci"}
             self.vars = [
                 c for c in self.raw_state_data.columns 
-                if is_numeric_dtype(self.raw_state_data[c])
+                if is_numeric_dtype(self.raw_state_data[c]) and c not in IGNORED_COLS
             ]
 
 
