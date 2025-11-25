@@ -196,9 +196,10 @@ class State:
         if new_episode:
             self.episode_start += self.step_hours
 
-            max_start = len(self.raw_state_data) - self.window_size
-            if self.episode_start > max_start:
-                self.episode_start = 0  # optional: loop back
+            if self.raw_state_data is not None:
+                max_start = len(self.raw_state_data) - self.window_size
+                if self.episode_start > max_start:
+                    self.episode_start = 0  # optional: loop back
 
             self.apply()
             
@@ -302,7 +303,7 @@ if __name__ == "__main__":
         "gas": Discretizer(col="gas_index")
     }
 
-    state = State(plant_id=2343, discretizers=discretizers)
+    state = State(plant_id="2343", discretizers=discretizers)
 
     # --- Two years of hourly data ---
     start = pd.Timestamp("2023-01-01 00:00:00")
