@@ -31,7 +31,7 @@ class SARIMAXLoadProjections:
         self._y = (self._historic_data.assign(period=lambda x: pd.to_datetime(x['period']).dt.tz_convert("UTC").dt.tz_localize(None))
                 .set_index('period').sort_index()["load_MWH"].asfreq('h'))
         
-        self._y = pd.to_numeric (self._y, errors='coerce')
+        self._y = pd.to_numeric(self._y, errors='coerce')
         # Fill in missing time periods by interpolating values
         self._y = self._y.interpolate(limit_direction='both')
 
