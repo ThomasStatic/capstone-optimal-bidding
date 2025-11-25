@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 PRICE_COL = "lmpPrice"
+HIST_LOAD_COL = "load_MWH"
 CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
 
 class Discretizer:
