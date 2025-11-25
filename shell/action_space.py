@@ -13,6 +13,7 @@ class ActionSpace:
 
     """
 
+    #TODO: specify types for discretizers
     price_disc: Any       # fitted discretizer for bid price
     quantity_disc: Any    # fitted discretizer for bid quantity
 
