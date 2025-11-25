@@ -4,6 +4,7 @@ import numpy as np
 from typing import Dict, Optional
 from linear_approximator import Discretizer
 from dataclasses import dataclass
+from pandas.api.types import is_numeric_dtype
 
 @dataclass
 class State:
@@ -92,7 +93,10 @@ class State:
             self.raw_state_data.sort_index(inplace=True)
 
         if self.raw_state_data is not None:
-            self.vars = [c for c in self.raw_state_data.columns if c != time_col]
+            self.vars = [
+                c for c in self.raw_state_data.columns 
+                if is_numeric_dtype(self.raw_state_data[c])
+            ]
 
 
     def apply(self):
