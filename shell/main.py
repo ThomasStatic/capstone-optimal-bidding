@@ -5,7 +5,9 @@ from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
 from shell.linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
+from shell.market_model import MarketModel, MarketParams
 from shell.state_space import State
+from shell.tabular_q_agent import TabularQLearningAgent
 
 ISO = "ERCOT"
 START_DATE = "2023-01-01"
@@ -65,3 +67,73 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
+def train():
+    #TODO: use Enverus API to get historic loads
+
+    historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
+    historic_loads = historic_load_api.get_market_loads()
+
+    #TODO: forecast historic loads
+
+    lmp_df = read_lmp_data()
+
+    state = make_state(historic_loads, lmp_df)
+    action_space = make_action_space(lmp_df)
+
+    #TODO: set market parameters appropriately, these are currently arbitrary
+    market_params = MarketParams(
+        marginal_cost=20.0,
+        price_noise_std=5.0,
+        min_price=float(action_space.price_disc.edges_[0]),
+        max_price=float(action_space.price_disc.edges_[-1]),
+    )
+    market_model = MarketModel(action_space, market_params)
+
+    agent = TabularQLearningAgent(num_actions = action_space.n_actions)
+
+    for episode in range(N_EPSIODES):
+        # New episode on first observation
+        observation = state.reset(new_episode=(episode > 0))
+        state_key = agent.state_to_key(observation)
+        total_reward = 0.0
+
+        max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() -1)
+
+        for t in range(max_steps):
+            action = agent.select_action(state_key)
+
+            current_time = state.current_time()
+            if state.raw_state_data is not None:
+                raw_current_row = state.raw_state_data.loc[current_time]
+                forecast_price = raw_current_row[PRICE_COL]
+
+                _, _, reward = market_model.clear_market_from_action(
+                    action, 
+                    forecast_price
+                )
+
+                next_observation, _, done, _ = state.step(action)
+                next_state_key = None if done else agent.state_to_key(next_observation)
+
+                if next_state_key is not None:
+                    agent.update_q_table(state_key, action, reward, next_state_key, done)
+                    state_key = next_state_key
+                    total_reward += reward
+
+                if done:
+                    break
+
+            agent.decay_epsilon()
+
+            print(
+            f"Episode {episode + 1}/{N_EPSIODES} | "
+            f"steps: {t + 1} | "
+            f"total reward: {total_reward:.2f} | "
+            f"epsilon: {agent.epsilon:.3f}"
+        )
+            
+    print("Training complete.")
+    return agent, state, action_space, market_model
+
+if __name__ == "__main__":
+    train()
