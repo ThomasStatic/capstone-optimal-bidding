@@ -3,11 +3,11 @@ import numpy as np
 
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
-from shell.action_space import ActionSpace
-from shell.linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
-from shell.market_model import MarketModel, MarketParams
-from shell.state_space import State
-from shell.tabular_q_agent import TabularQLearningAgent
+from action_space import ActionSpace
+from linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
+from market_model import MarketModel, MarketParams
+from state_space import State
+from tabular_q_agent import TabularQLearningAgent
 
 ISO = "ERCOT"
 START_DATE = "2023-01-01"
@@ -21,12 +21,14 @@ MAX_BID_QUANTITY_MW = 50
 N_EPSIODES = 20
 MAX_STEPS_PER_EPISODE = 24 * 7  # One week
 
-def read_lmp_data():
+def read_lmp_data() -> pd.DataFrame:
     '''Loads LMP data from local CSV and returns a datetime df'''
 
-    #TODO: add error handling for date time index
+    #TODO: add ISO handling logic, currently only ERCOT
 
     df = pd.read_csv(LMP_CSV_PATH)
+    df["datetime"] = pd.to_datetime(df["CloseDateUTC"], utc=True)
+    df = df[["datetime", PRICE_COL]].sort_values("datetime")
     return df[["datetime", PRICE_COL]].sort_values("datetime")
 
 def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame) -> State:
