@@ -105,14 +105,6 @@ class Discretizer:
         self.best_method_ = best
         self.edges_ = self.metrics_[best]["edges"]
 
-        print("\nOptimal discretization selected:")
-        print(f"Column used: {self.col}")
-        print(f"Best method: {best}")
-        print(f"Sparsity: {self.metrics_[best]['sparsity']:.4f}")
-        print(f"Imbalance: {self.metrics_[best]['imbalance']:.2f}")
-        print("Edges:", self.edges_)
-        print("Counts:", self.metrics_[best]["counts"])
-
         return self
 
     # Transform a new dataframe
@@ -139,5 +131,3 @@ if __name__ == "__main__":
 
     disc = Discretizer(col=PRICE_COL, n_bins=8)
     df["lmp_bin"] = disc.fit_transform(df)
-
-    print(df.head())
