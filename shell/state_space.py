@@ -144,7 +144,7 @@ class State:
             if getattr(disc, "edges_", None) is None:
                 vals = disc.fit_transform(series_df)
             else:
-                vals = disc.transform(series_df)
+                vals = disc._transform(series_df)
 
             out_cols[col] = pd.Series(vals, index=series_df.index, name=col)
 
