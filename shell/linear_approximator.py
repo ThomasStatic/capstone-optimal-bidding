@@ -109,7 +109,7 @@ class Discretizer:
 
     # Transform a new dataframe
 
-    def transform(self, df):
+    def _transform(self, df):
         if self.edges_ is None:
             raise RuntimeError("Call fit() before transform().")
         s = df[self.col]
@@ -120,7 +120,7 @@ class Discretizer:
 
     def fit_transform(self, df):
         self.fit(df)
-        return self.transform(df)
+        return self._transform(df)
 
 
 
