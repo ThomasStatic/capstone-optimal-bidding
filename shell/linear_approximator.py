@@ -3,7 +3,8 @@ import pandas as pd
 
 PRICE_COL = "lmpPrice"
 HIST_LOAD_COL = "load_MWH"
-CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
+FORECAST_LOAD_COL = "forecast"
+LMP_CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
 
 class Discretizer:
     """
@@ -128,7 +129,7 @@ class Discretizer:
 
 # Example usage for LMP
 if __name__ == "__main__":
-    df = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(LMP_CSV_PATH)
 
     disc = Discretizer(col=PRICE_COL, n_bins=8)
     df["lmp_bin"] = disc.fit_transform(df)
