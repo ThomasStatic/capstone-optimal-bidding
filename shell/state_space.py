@@ -145,7 +145,7 @@ class State:
             out_cols[col] = pd.Series(vals, index=series_df.index, name=col)
 
         # --- Time-of-day feature ---
-        hours = pd.Series(self.raw_state_data.index.hour, index=self.raw_state_data.index)
+        hours = pd.Series(pd.to_datetime(self.raw_state_data.index).hour, index=self.raw_state_data.index)
 
         def map_hour_to_period(h):
             if 0 <= h <= 5:
