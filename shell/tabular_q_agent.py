@@ -3,10 +3,11 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike
 
 # Our State object currently produces Pandas row of discrete values, so needs to be converted to a hashable type
 StateKey = Tuple[int, ...]
-StateVec = Union[np.ndarray, pd.Series]
+StateVec = ArrayLike  # e.g., np.ndarray or pd.Series
 
 @dataclass
 class TabularQLearningAgent:
@@ -27,7 +28,7 @@ class TabularQLearningAgent:
         if isinstance(state_vec, pd.Series):
             vals = state_vec.to_numpy()
         else:
-            vals = state_vec
+            vals = np.asarray(state_vec)
         
         return tuple(int(v) for v in vals)
     
