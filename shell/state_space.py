@@ -91,7 +91,8 @@ class State:
         if isinstance(self.raw_state_data, pd.DataFrame):
             self.raw_state_data.sort_index(inplace=True)
 
-        self.vars = [c for c in self.raw_state_data.columns if c != time_col]
+        if self.raw_state_data is not None:
+            self.vars = [c for c in self.raw_state_data.columns if c != time_col]
 
 
     def apply(self):
