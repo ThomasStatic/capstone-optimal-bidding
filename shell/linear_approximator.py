@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-PRICE_COL = "real_time_average_lmp_past_1_week"
-CSV_PATH = r"C:\Users\chown\Downloads\env_csv-PowerPlants-3bd8d_2025-11-17\env_csv-PowerPlants-3bd8d_2025-11-17.csv"
+PRICE_COL = "lmpPrice"
+CSV_PATH = r"../lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
 
 class Discretizer:
     """
