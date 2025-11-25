@@ -293,6 +293,7 @@ class State:
     def n_steps(self):
         return len(self.timestamps)
 
+    #TODO: rename to get current time
     def current_time(self):
         return self.timestamps[self.ptr] if self.timestamps else None
 
