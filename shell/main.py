@@ -1,7 +1,9 @@
 import pandas as pd
+import numpy as np
 
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
+from shell.action_space import ActionSpace
 from shell.linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
 from shell.state_space import State
 
@@ -11,6 +13,7 @@ END_DATE = "2023-01-31"
 
 N_PRICE_BINS = 8
 N_LOAD_BINS = 8
+N_QTY_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
 N_EPSIODES = 20
@@ -25,8 +28,6 @@ def read_lmp_data():
     return df[["datetime", PRICE_COL]].sort_values("datetime")
 
 def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame) -> State:
-    '''Build the state space, discretized'''
-
     df_load = (
         historic_loads.rename(columns={"period": "datetime"})[
             ["datetime", HIST_LOAD_COL]
@@ -53,4 +54,14 @@ def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame) -> State:
     state.apply()
     return state
 
+def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
+    price_disc = Discretizer(col=PRICE_COL, n_bins=N_PRICE_BINS)
+    price_disc.fit(lmp_df[[PRICE_COL]])
+
+    qty_grid = np.linspace(0, MAX_BID_QUANTITY_MW, 100)
+    qty_df = pd.DataFrame({ "quantity": qty_grid })
+    qty_disc = Discretizer(col="quantity", n_bins=N_QTY_BINS)
+    qty_disc.fit(qty_df)
+
+    return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
