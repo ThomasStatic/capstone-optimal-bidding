@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 PRICE_COL = "lmpPrice"
-CSV_PATH = r"../lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
+CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
 
 class Discretizer:
     """
@@ -140,5 +140,4 @@ if __name__ == "__main__":
     disc = Discretizer(col=PRICE_COL, n_bins=8)
     df["lmp_bin"] = disc.fit_transform(df)
 
-    # Optional: preview the data
-    #print(df[[PRICE_COL, "lmp_bin"]].head())
+    print(df.head())
