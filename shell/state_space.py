@@ -209,7 +209,7 @@ class State:
             self.apply()
             
         self.ptr = 0
-        return self.current_row().values
+        return self.current_row().to_numpy()
 
     def step(self, action=None):
         """
@@ -228,7 +228,7 @@ class State:
             done = False
 
 
-        next_state = self.current_row().values
+        next_state = self.current_row().to_numpy()
 
         # placeholder exogenous reward
         reward = 0.0
