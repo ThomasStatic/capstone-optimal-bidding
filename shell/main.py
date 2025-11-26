@@ -4,7 +4,7 @@ import numpy as np
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
 from action_space import ActionSpace
-from linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
+from linear_approximator import HIST_LOAD_COL, FORECAST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
 from market_model import MarketModel, MarketParams
 from state_space import State
 from tabular_q_agent import TabularQLearningAgent
@@ -15,6 +15,7 @@ END_DATE = "2023-01-31"
 
 N_PRICE_BINS = 8
 N_LOAD_BINS = 8
+N_FORECAST_BINS = 8
 N_QTY_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
@@ -76,6 +77,12 @@ def train():
     historic_loads = historic_load_api.get_market_loads()
 
     #TODO: forecast historic loads
+    try:
+        sarimax = SARIMAXLoadProjections(historic_loads)
+        forecast_df = sarimax.get_forecast_df()
+    except Exception as e:
+        print(f"Warning: SARIMAX model failed, continuing without it: {e}")
+        forecast_df = None
 
     lmp_df = read_lmp_data()
 
