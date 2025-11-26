@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
@@ -18,7 +19,7 @@ N_LOAD_BINS = 8
 N_QTY_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
-N_EPSIODES = 20
+N_EPISODES = 20
 MAX_STEPS_PER_EPISODE = 24 * 7  # One week
 
 def read_lmp_data() -> pd.DataFrame:
@@ -69,6 +70,44 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
+def plot_results(episode_epsilons, episode_rewards):
+    # Additionally functional for plotting rewards
+    plt.figure()
+    start_time = pd.Timestamp.now(tz="UTC").normalize()
+    for idx, rewards in enumerate(episode_rewards):
+        if not rewards: 
+            continue
+        time_index = pd.date_range(start=start_time, periods=len(rewards), freq="H", tz="UTC")
+        plt.plot(time_index, rewards, label=f"Episode {idx+1} Rewards")
+    
+    plt.xlabel("Time")
+    plt.ylabel("Reward")
+    plt.title("Reward per Step (Each Episode)")
+    plt.legend(loc="upper right", fontsize="small")
+    plt.show()
+
+    plt.figure()
+    for idx, epsilons in enumerate(episode_epsilons):
+        if not epsilons: 
+            continue
+        time_index = pd.date_range(start=start_time, periods=len(epsilons), freq="h", tz="UTC")
+        plt.plot(time_index, epsilons, label=f"Episode {idx+1} Epsilon")
+    
+    plt.xlabel("Time")
+    plt.ylabel("Epsilon")
+    plt.title("Epsilon per Step (Each Episode)")
+    plt.legend(loc="upper right", fontsize="small")
+    plt.show()
+
+    totals = [sum(ep) for ep in episode_rewards]
+
+    plt.figure()
+    plt.plot(totals)
+    plt.xlabel("Episode")
+    plt.ylabel("Total Reward")
+    plt.title("Total Reward per Episode")
+    plt.show()
+
 def train():
     #TODO: use Enverus API to get historic loads
 
@@ -93,12 +132,16 @@ def train():
 
     agent = TabularQLearningAgent(num_actions = action_space.n_actions)
 
-    for episode in range(N_EPSIODES):
+    episode_rewards = []
+    episode_epsilons = []
+
+    for episode in range(N_EPISODES):
         # New episode on first observation
         observation = state.reset(new_episode=(episode > 0))
         state_key = agent.state_to_key(observation)
         total_reward = 0.0
-
+        episode_reward = []
+        episode_epsilon = []
         max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() -1)
 
         for t in range(max_steps):
@@ -121,19 +164,22 @@ def train():
                     agent.update_q_table(state_key, action, reward, next_state_key, done)
                     state_key = next_state_key
                     total_reward += reward
-
+                    episode_reward.append(reward)
+                    episode_epsilon.append(agent.epsilon)
                 if done:
                     break
 
             agent.decay_epsilon()
-
-            print(
-            f"Episode {episode + 1}/{N_EPSIODES} | "
-            f"steps: {t + 1} | "
+            
+        print(
+            f"Episode {episode + 1}/{N_EPISODES} | "
             f"total reward: {total_reward:.2f} | "
             f"epsilon: {agent.epsilon:.3f}"
         )
-            
+        episode_rewards.append(episode_reward)
+        episode_epsilons.append(episode_epsilon)
+    plot_results(episode_epsilons, episode_rewards)
+
     print("Training complete.")
     return agent, state, action_space, market_model
 
