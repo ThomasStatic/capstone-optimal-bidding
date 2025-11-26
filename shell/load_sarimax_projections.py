@@ -84,8 +84,8 @@ class SARIMAXLoadProjections:
         fitted_model.plot_diagnostics(figsize=(10, 16))
         plt.show()
 
-        # Forecast the next 24 hours
-        steps = 24
+        # Forecast the next 24 * 7 hours
+        steps = 24 * 7
         exog_future = exog_te.iloc[:steps].astype(float) # we only need exogenous variables for the forecast horizon
 
         forecast = fitted_model.get_forecast(steps=steps, exog=exog_future)
