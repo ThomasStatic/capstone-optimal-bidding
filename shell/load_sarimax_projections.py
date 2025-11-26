@@ -111,3 +111,8 @@ class SARIMAXLoadProjections:
 
         print("Forecast for the next 24 hours:")
         print(df_forecast)
+
+    def get_forecast_df(self) -> DataFrame:
+        if not hasattr(self, 'forecast_df'):
+            raise ValueError("Forecast has not been generated yet. Call _fit_sarimax_model() first.")
+        return self.forecast_df
