@@ -90,9 +90,24 @@ class SARIMAXLoadProjections:
 
         forecast = fitted_model.get_forecast(steps=steps, exog=exog_future)
         forcast_ci = forecast.conf_int()
-        df_forecast = pd.DataFrame({
-            'forecast': forecast.predicted_mean,
-            'lower_ci': forcast_ci.iloc[:, 0],
-            'upper_ci': forcast_ci.iloc[:, 1]
+
+        # This is on the log scale, i.e., y_tr = log(load_MWH)
+        df_forecast_log = pd.DataFrame({
+            'forecast_log': forecast.predicted_mean,
+            'lower_ci_log': forcast_ci.iloc[:, 0],
+            'upper_ci_log': forcast_ci.iloc[:, 1]
         })
+
+        # Transform back to original scale
+        df_forecast = pd.DataFrame({
+            'forecast': np.exp(df_forecast_log['forecast_log']),
+            'lower_ci': np.exp(df_forecast_log['lower_ci_log']),
+            'upper_ci': np.exp(df_forecast_log['upper_ci_log'])
+        }, index=df_forecast_log.index)
+
+        df_forecast = df_forecast.reset_index().rename(columns={'index': 'datetime'})
+
+        self.forecast_df = df_forecast
+
+        print("Forecast for the next 24 hours:")
         print(df_forecast)
