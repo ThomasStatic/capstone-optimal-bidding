@@ -91,6 +91,7 @@ def train():
     )
     market_model = MarketModel(action_space, market_params)
 
+    #TODO: Explicitly pass in hyperparameters
     agent = TabularQLearningAgent(num_actions = action_space.n_actions)
 
     for episode in range(N_EPSIODES):
