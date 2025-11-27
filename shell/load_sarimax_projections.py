@@ -81,8 +81,8 @@ class SARIMAXLoadProjections:
         print(fitted_model.summary())
 
         #TODO: move plotting to analysis directory, i.e., new file
-        fitted_model.plot_diagnostics(figsize=(10, 16))
-        plt.show()
+        #fitted_model.plot_diagnostics(figsize=(10, 16))
+        #plt.show()
 
         # Forecast the next 24 * 7 hours
         steps = 24 * 7
