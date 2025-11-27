@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import pickle
 
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
@@ -164,7 +165,16 @@ def train():
             f"total reward: {total_reward:.2f} | "
             #f"epsilon: {agent.epsilon:.3f}"     -- epsilon-greedy
             f"temperature: {tau:.3f}"           # -- softmax
-        )
+            )
+
+    # TODO: Run backtesting on frozen Q-table
+    with open("q_table.pkl", "wb") as f:
+        pickle.dump(agent.Q, f)
+
+    with open("policy.pkl", "wb") as f:
+        pickle.dump(agent.extract_softmax_policy(temperature=0.1), f)
+    
+            
             
     print("Training complete.")
     return agent, state, action_space, market_model
