@@ -4,7 +4,7 @@ import numpy as np
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
 from action_space import ActionSpace
-from linear_approximator import HIST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
+from linear_approximator import HIST_LOAD_COL, FORECAST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
 from market_model import MarketModel, MarketParams
 from state_space import State
 from tabular_q_agent import TabularQLearningAgent
@@ -15,6 +15,7 @@ END_DATE = "2023-01-31"
 
 N_PRICE_BINS = 8
 N_LOAD_BINS = 8
+N_FORECAST_BINS = 8
 N_QTY_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
@@ -31,7 +32,7 @@ def read_lmp_data() -> pd.DataFrame:
     df = df[["datetime", PRICE_COL]].sort_values("datetime")
     return df[["datetime", PRICE_COL]].sort_values("datetime")
 
-def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame) -> State:
+def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame, forecast_df: pd.DataFrame | None) -> State:
     df_load = (
         historic_loads.rename(columns={"period": "datetime"})[
             ["datetime", HIST_LOAD_COL]
@@ -40,17 +41,26 @@ def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame) -> State:
     )
     df_load["datetime"] = pd.to_datetime(df_load["datetime"], utc=True)
 
-    #TODO: add SARIMAX forecast data
     dfs = {
         "load": df_load,
         "price": lmp_df,
     }
 
-    #TODO: add SARIMXAX discretization
+    if forecast_df is not None:
+        df_f = forecast_df[["datetime", FORECAST_LOAD_COL]].copy()
+        df_f["datetime"] = pd.to_datetime(df_f["datetime"], utc=True)
+        dfs["forecast"] = df_f
+
     state_discretizers = {
         HIST_LOAD_COL: Discretizer(col=HIST_LOAD_COL, n_bins=N_LOAD_BINS),
         PRICE_COL: Discretizer(col=PRICE_COL, n_bins=N_PRICE_BINS),
     }
+
+    if forecast_df is not None:
+        state_discretizers[FORECAST_LOAD_COL] = Discretizer(
+            col=FORECAST_LOAD_COL,
+            n_bins=N_FORECAST_BINS,
+        )
 
     #TODO: plant_id should work on a dict of ISOs instead of one
     state = State(plant_id=ISO, discretizers=state_discretizers)
@@ -75,11 +85,16 @@ def train():
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
     historic_loads = historic_load_api.get_market_loads()
 
-    #TODO: forecast historic loads
+    try:
+        sarimax = SARIMAXLoadProjections(historic_loads)
+        forecast_df = sarimax.get_forecast_df()
+    except Exception as e:
+        print(f"Warning: SARIMAX model failed, continuing without it: {e}")
+        forecast_df = None
 
     lmp_df = read_lmp_data()
 
-    state = make_state(historic_loads, lmp_df)
+    state = make_state(historic_loads, lmp_df, forecast_df)
     action_space = make_action_space(lmp_df)
 
     #TODO: set market parameters appropriately, these are currently arbitrary
@@ -91,6 +106,7 @@ def train():
     )
     market_model = MarketModel(action_space, market_params)
 
+    #TODO: Explicitly pass in hyperparameters
     agent = TabularQLearningAgent(num_actions = action_space.n_actions)
 
     for episode in range(N_EPSIODES):
