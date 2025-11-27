@@ -85,5 +85,12 @@ class TabularQLearningAgent:
 
         self.Q[state_key][action] = quality_current + self.alpha * (target - quality_current)
 
+    def extract_softmax_policy(self, temperature: float = 1.0) -> Dict[StateKey, np.ndarray | int]:
+        policy: Dict[StateKey, np.ndarray | int] = {}
+        for state_key in self.Q.keys():
+            probs = self.get_softmax_action_probs(state_key, temperature)
+            policy[state_key] = int(np.argmax(probs)) # only do this for deterministic policy
+        return policy
+
     def decay_epsilon(self) -> None:
         self.epsilon *= self.epsilon_decay
