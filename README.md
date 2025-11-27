@@ -90,7 +90,7 @@ python src/analysis/plot_rewards.py
 | Name | Role | Focus Area |
 |:------|:------|:-------------|
 | [**Thomas Boyle**](https://www.linkedin.com/in/thomasboyle2003/) | Developer | RL modeling, Q-Learning algorithm, SARIMAX integration |
-| [**Teammate 1**]() | Developer |  |
+| [**Rohan Kumar**](https://www.linkedin.com/in/rohankumar2025/) | Developer | Power Market Research, Market Environment Development |
 | [**Teammate 2**]() | Developer |  |
 | [**Teammate 3**]() | Developer |  |
 
