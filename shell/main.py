@@ -80,6 +80,7 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
 def train():
+
     #TODO: use Enverus API to get historic loads
 
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
@@ -109,16 +110,29 @@ def train():
     #TODO: Explicitly pass in hyperparameters
     agent = TabularQLearningAgent(num_actions = action_space.n_actions)
 
+    # TODO: Come up with a non arbitrary temperature schedule
+    # Right now it is set to start off very exploratory and quickly become greedy 
+    initial_tau = 1.0
+    min_tau = 0.1
+    tau_decay = 0.99
+
     for episode in range(N_EPSIODES):
         # New episode on first observation
         observation = state.reset(new_episode=(episode > 0))
         state_key = agent.state_to_key(observation)
         total_reward = 0.0
 
+        tau = max(min_tau, initial_tau * (tau_decay ** episode))
+
         max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() -1)
 
         for t in range(max_steps):
-            action = agent.select_action(state_key)
+            # epsilon-greedy action selection
+            # action = agent.select_action(state_key)
+
+            
+            # Boltzmann softmax action selection
+            action = agent.select_softmax_action(state_key, temperature=tau)
 
             current_time = state.current_time()
             if state.raw_state_data is not None:
@@ -141,13 +155,15 @@ def train():
                 if done:
                     break
 
-            agent.decay_epsilon()
+            # Only used for epsilon-greedy
+            # agent.decay_epsilon()
 
             print(
             f"Episode {episode + 1}/{N_EPSIODES} | "
             f"steps: {t + 1} | "
             f"total reward: {total_reward:.2f} | "
-            f"epsilon: {agent.epsilon:.3f}"
+            #f"epsilon: {agent.epsilon:.3f}"     -- epsilon-greedy
+            f"temperature: {tau:.3f}"           # -- softmax
         )
             
     print("Training complete.")
