@@ -14,7 +14,7 @@ class EnverusAPI:
         self.base_url = "https://api.enverus.com/v3/direct-access"
 
     def generate_token(self) -> None:
-        '''Generates an API token.'''
+        '''Generates an API token to use for subsequent requests.'''
         url = f"{self.base_url}/tokens"
         headers = {"Content-Type": "application/json"}
         data = {"secretKey": self.__api_key}
@@ -26,4 +26,20 @@ class EnverusAPI:
         if not self._token:
             raise ValueError("Failed to retrieve token from response")
         
-    
+    def query_lmp(self) -> None:
+        '''Queries the LMP endpoint using the generated token.'''
+        if not self._token:
+            raise ValueError("API token is not generated. Call generate_token() first.")
+        url = f"{self.base_url}/lmp"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._token}"
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raise an error for bad responses
+        print(response.json())
+
+if __name__ == "__main__":
+    api = EnverusAPI()
+    api.generate_token()    
+    api.query_lmp()
