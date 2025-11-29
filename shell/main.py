@@ -168,10 +168,10 @@ def train():
             )
 
     # TODO: Run backtesting on frozen Q-table
-    with open("q_table.pkl", "wb") as f:
+    with open("shell/pickles/q_table.pkl", "wb") as f:
         pickle.dump(agent.Q, f)
 
-    with open("policy.pkl", "wb") as f:
+    with open("shell/pickles/policy.pkl", "wb") as f:
         pickle.dump(agent.extract_softmax_policy(temperature=0.1), f)
     
             
