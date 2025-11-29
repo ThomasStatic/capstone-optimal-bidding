@@ -36,7 +36,7 @@ class TabularQLearningAgent:
         if key not in self.Q:
             self.Q[key] = np.zeros(self.num_actions, dtype=float)
     
-
+    # epsilon-greedy action selection
     def select_action(self, state_key: StateKey) -> int:
         self._ensure_state(state_key)
 
@@ -53,9 +53,28 @@ class TabularQLearningAgent:
             best_actions = np.flatnonzero(q_values == max_q)
             return int(self._rng.choice(best_actions))
         
+    def get_softmax_action_probs(self, state_key: StateKey, temperature: float = 1.0) -> np.ndarray:
+        self._ensure_state(state_key)
+        q_values = self.Q[state_key]
+        
+        # Temperature must be positive for softmax, fallback to epsilon greedy
+        if temperature <= 0:
+            probs = np.zeros_like(q_values, dtype=float)
+            probs[np.argmax(q_values)] = 1.0
+            return probs
+        
+        scaled = q_values / temperature
+        scaled -= np.max(scaled)
+        exp_q = np.exp(scaled)
+        return exp_q / np.sum(exp_q)
+    
+    def select_softmax_action(self, state_key: StateKey, temperature: float = 1.0) -> int:
+        probs = self.get_softmax_action_probs(state_key, temperature)
+        return int(self._rng.choice(self.num_actions, p=probs))
+
+        
     def update_q_table(self, state_key: StateKey, action: int, reward: float, next_state_key: StateKey, done: bool) -> None:
         self._ensure_state(state_key)
-        
         quality_current = self.Q[state_key][action]
 
         if done or next_state_key is None:
@@ -65,6 +84,13 @@ class TabularQLearningAgent:
             target = reward + self.gamma * np.max(self.Q[next_state_key])
 
         self.Q[state_key][action] = quality_current + self.alpha * (target - quality_current)
+
+    def extract_softmax_policy(self, temperature: float = 1.0) -> Dict[StateKey, np.ndarray | int]:
+        policy: Dict[StateKey, np.ndarray | int] = {}
+        for state_key in self.Q.keys():
+            probs = self.get_softmax_action_probs(state_key, temperature)
+            policy[state_key] = int(np.argmax(probs)) # only do this for deterministic policy
+        return policy
 
     def decay_epsilon(self) -> None:
         self.epsilon *= self.epsilon_decay
