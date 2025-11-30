@@ -23,6 +23,8 @@ MAX_BID_QUANTITY_MW = 50
 N_EPSIODES = 20
 MAX_STEPS_PER_EPISODE = 24 * 7  # One week
 
+LEAD_HOURS = 24 # Bid 24 hours in advance
+
 def read_lmp_data() -> pd.DataFrame:
     '''Loads LMP data from local CSV and returns a datetime df'''
 
@@ -125,7 +127,8 @@ def train():
 
         tau = max(min_tau, initial_tau * (tau_decay ** episode))
 
-        max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() -1)
+        # Ensure we don't go out of range
+        max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() - LEAD_HOURS -1)
 
         for t in range(max_steps):
             # epsilon-greedy action selection
@@ -136,13 +139,18 @@ def train():
             action = agent.select_softmax_action(state_key, temperature=tau)
 
             current_time = state.current_time()
-            if state.raw_state_data is not None:
-                raw_current_row = state.raw_state_data.loc[current_time]
-                forecast_price = raw_current_row[PRICE_COL]
+            if state.raw_state_data is not None and current_time is not None:
+                delivery_time = current_time + pd.Timedelta(hours=LEAD_HOURS)
+                if delivery_time not in state.raw_state_data.index:
+                    print("Reached end of data for delivery time.")
+                    break
+
+                delivery_row = state.raw_state_data.loc[delivery_time]
+                forward_price = delivery_row[PRICE_COL]
 
                 _, _, reward = market_model.clear_market_from_action(
                     action, 
-                    forecast_price
+                    forward_price
                 )
 
                 next_observation, _, done, _ = state.step(action)

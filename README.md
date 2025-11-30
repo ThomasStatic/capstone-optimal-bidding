@@ -90,9 +90,9 @@ python src/analysis/plot_rewards.py
 | Name | Role | Focus Area |
 |:------|:------|:-------------|
 | [**Thomas Boyle**](https://www.linkedin.com/in/thomasboyle2003/) | Developer | RL modeling, Q-Learning algorithm, SARIMAX integration |
-| [**Teammate 1**]() | Developer |  |
-| [**Teammate 2**]() | Developer |  |
-| [**Teammate 3**]() | Developer |  |
+| [**Rohan Kumar**](https://www.linkedin.com/in/rohankumar2025/) | Developer | Power Market Research, Market Environment Development |
+| [**Natalie Chow**](https://www.linkedin.com/in/natalie-chow-) | Developer |  |
+| [**Sam Joffe**](https://www.linkedin.com/in/samuel-joffe-ab0281308/) | Developer |  |
 
 #### Supervisor
 Dr. Serdar Yuksel
