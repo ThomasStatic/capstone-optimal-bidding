@@ -12,7 +12,7 @@ from load_sarimax_projections import SARIMAXLoadProjections
 from linear_approximator import PRICE_COL
 from market_model import MarketModel, MarketParams
 from tabular_q_agent import TabularQLearningAgent
-from main import make_action_space, make_state, read_lmp_data
+from main import make_action_space, make_state, read_lmp_data, LEAD_HOURS, ISO
 
 # Load policy - not used in code
 def load_policy(policy_path: str) -> Dict:
@@ -88,20 +88,13 @@ def validate(args):
     # Load Q-learning agent
     agent = load_agent(args.q_table_path)
 
-    # Create environment components - same setup as training script
-    ISO = "ERCOT"
+    # Create environment components
+    #TODO Modify Sarimax hours parameter
     START_DATE = "2023-02-01"
     END_DATE = "2023-03-01"
 
-    #TODO: Remove if unecessary 
-    N_PRICE_BINS = 8
-    N_LOAD_BINS = 8
-    N_FORECAST_BINS = 8
-    N_QTY_BINS = 8
-    MAX_BID_QUANTITY_MW = 50
-
-    N_EPSIODES = 20
-    MAX_STEPS_PER_EPISODE = 24 * 7  # One week
+    #TODO: calculate validation hours dynamically
+    validation_hours = int((pd.to_datetime(END_DATE) - pd.to_datetime(START_DATE) - pd.Timedelta(days=14)).total_seconds()/3600)
 
     #TODO: use Enverus API to get historic loads
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
@@ -109,15 +102,15 @@ def validate(args):
 
     #TODO: Modify SARIMAX model to not train on same data as Q-Learning algorithm
     #TODO: Save SARIMAX model to avoid retraining every time
+    #TODO: Modify hours parameter
     try:
-        sarimax = SARIMAXLoadProjections(historic_loads)
+        sarimax = SARIMAXLoadProjections(historic_loads, hours=validation_hours)
         forecast_df = sarimax.get_forecast_df()
     except Exception as e:
         print(f"Warning: SARIMAX model failed, continuing without it: {e}")
         forecast_df = None
 
     lmp_df = read_lmp_data()
-
     state = make_state(historic_loads, lmp_df, forecast_df)
     action_space = make_action_space(lmp_df)
 
@@ -130,6 +123,9 @@ def validate(args):
     )
     market_model = MarketModel(action_space, market_params)
     
+    start_time = pd.Timestamp(START_DATE)
+    daily_counter = 0
+
     # Validation metrics
     all_rewards = []
     all_actions = []
@@ -144,7 +140,7 @@ def validate(args):
     total_reward = 0.0
     daily_reward = 0.0
 
-    max_steps = state.n_steps() - 1
+    max_steps = state.n_steps() - LEAD_HOURS # Total hourly steps
 
     for t in range(max_steps):
         # Select action (pure exploitation, temperature=0)
@@ -161,12 +157,18 @@ def validate(args):
 
         # Get current market state
         current_time = state.current_time()
-        if state.raw_state_data is not None:
-            raw_current_row = state.raw_state_data.loc[current_time]
-            forecast_price = raw_current_row[PRICE_COL]
+        if state.raw_state_data is not None and current_time is not None:
+            # Logic for delivery time
+            delivery_time = current_time + pd.Timedelta(hours=LEAD_HOURS)
+            if delivery_time not in state.raw_state_data.index:
+                print("Reached end of data for delivery time.")
+                break
+
+            delivery_row = state.raw_state_data.loc[delivery_time]
+            forward_price = delivery_row[PRICE_COL]
             
             # Clear market and get reward
-            _, _, reward = market_model.clear_market_from_action(action, forecast_price)
+            _, _, reward = market_model.clear_market_from_action(action, forward_price)
             
             total_reward += reward
             all_rewards.append(reward)
@@ -184,10 +186,16 @@ def validate(args):
         
         # Progress update every 24 hours
         if (t + 1) % 24 == 0:
-            previous_date = pd.to_datetime(START_DATE) - pd.Timedelta(days=1) + pd.Timedelta(hours=t + 1)
+            
+            # --- Existing Reward Logging ---
+            current_date = start_time + pd.Timedelta(hours=t + 1)
             daily_rewards.append(daily_reward)
-            print(f"  Day {(t + 1)//24}/{max_steps//24} | Date: {previous_date} | Daily reward: {daily_reward:.2f} | Cumulative reward: {total_reward:.2f}")
+            daily_counter += 1 # Increment daily counter
+            print(f" Day {daily_counter}/{max_steps//24} | Date: {current_date} | Daily reward: {daily_reward:.2f} | Cumulative reward: {total_reward:.2f}")
+            
+            # Reset the daily reward accumulator
             daily_reward = 0.0
+            
         else:
             daily_reward += reward
 

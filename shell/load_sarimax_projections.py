@@ -12,7 +12,7 @@ class SARIMAXLoadProjections:
     X_daily: DataFrame
     exogenous_df: DataFrame
     
-    def __init__(self, historic_data: DataFrame):
+    def __init__(self, historic_data: DataFrame, hours: int):
         self._historic_data = historic_data
         self._prepare_historical_data()
 
@@ -22,7 +22,7 @@ class SARIMAXLoadProjections:
     
         self._set_exogenous_df()
 
-        self._fit_sarimax_model()
+        self._fit_sarimax_model(steps = hours)
 
 
     def _prepare_historical_data(self):
@@ -57,7 +57,7 @@ class SARIMAXLoadProjections:
 
         self.exogenous_df = pd.concat([self.X_daily, calendar_df], axis=1)
 
-    def _fit_sarimax_model(self):
+    def _fit_sarimax_model(self, steps: int):
         '''Fit SARIMAX model to the transformed load data.'''
         train_end = self.y_trans.index.max() - pd.Timedelta(days=14)
         y_tr, y_te = self.y_trans[:train_end], self.y_trans[train_end + pd.Timedelta(hours=1):]
@@ -84,8 +84,7 @@ class SARIMAXLoadProjections:
         #fitted_model.plot_diagnostics(figsize=(10, 16))
         #plt.show()
 
-        # Forecast the next 24 * 7 hours
-        steps = 24 * 7
+        # Forecast the next 'steps' periods
         exog_future = exog_te.iloc[:steps].astype(float) # we only need exogenous variables for the forecast horizon
 
         forecast = fitted_model.get_forecast(steps=steps, exog=exog_future)
