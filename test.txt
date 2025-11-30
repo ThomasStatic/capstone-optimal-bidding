@@ -1,0 +1,7 @@
+# CMD arguments for running validation script. Make sure to train model before running script.
+
+# With saved policy
+python ./shell/test.py --use_policy --policy_path "policy.pkl" --q_table_path "q_table.pkl" --analysis_path ".\Analysis"
+
+# Utilizing agent with some exploration_rate
+python ./shell/test.py --exploration_rate 0.1 --policy_path "policy.pkl" --q_table_path "q_table.pkl" --analysis_path ".\Analysis"

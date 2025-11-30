@@ -89,8 +89,9 @@ def train():
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
     historic_loads = historic_load_api.get_market_loads()
 
+    # Modified to take in custom number of hours for predictions
     try:
-        sarimax = SARIMAXLoadProjections(historic_loads)
+        sarimax = SARIMAXLoadProjections(historic_loads, hours=MAX_STEPS_PER_EPISODE)
         forecast_df = sarimax.get_forecast_df()
     except Exception as e:
         print(f"Warning: SARIMAX model failed, continuing without it: {e}")
