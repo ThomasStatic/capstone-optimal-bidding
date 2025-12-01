@@ -5,7 +5,13 @@ import pickle
 from market_loads_api import ISODemandController
 from load_sarimax_projections import SARIMAXLoadProjections
 from action_space import ActionSpace
-from linear_approximator import HIST_LOAD_COL, FORECAST_LOAD_COL, LMP_CSV_PATH, PRICE_COL, Discretizer
+from linear_approximator import (
+    HIST_LOAD_COL,
+    FORECAST_LOAD_COL,
+    LMP_CSV_PATH,
+    PRICE_COL,
+    Discretizer,
+)
 from market_model import MarketModel, MarketParams
 from state_space import State
 from tabular_q_agent import TabularQLearningAgent
@@ -14,178 +20,201 @@ ISO = "ERCOT"
 START_DATE = "2023-01-01"
 END_DATE = "2023-01-31"
 
-N_PRICE_BINS = 8
-N_LOAD_BINS = 8
-N_FORECAST_BINS = 8
-N_QTY_BINS = 8
+NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
-N_EPSIODES = 20
-MAX_STEPS_PER_EPISODE = 24 * 7  # One week
+def build_state_and_discretizers(
+    load_df: pd.DataFrame, price_df: pd.DataFrame
+) -> tuple[State, dict]:
+    load_disc = Discretizer(col=HIST_LOAD_COL, n_bins=NUM_DISCRETIZER_BINS)
+    forecast_disc = Discretizer(col=FORECAST_LOAD_COL, n_bins=NUM_DISCRETIZER_BINS)
+    price_disc = Discretizer(col=PRICE_COL, n_bins=NUM_DISCRETIZER_BINS)
 
-LEAD_HOURS = 24 # Bid 24 hours in advance
-
-def read_lmp_data() -> pd.DataFrame:
-    '''Loads LMP data from local CSV and returns a datetime df'''
-
-    #TODO: add ISO handling logic, currently only ERCOT
-
-    df = pd.read_csv(LMP_CSV_PATH)
-    df["datetime"] = pd.to_datetime(df["CloseDateUTC"], utc=True)
-    df = df[["datetime", PRICE_COL]].sort_values("datetime")
-    return df[["datetime", PRICE_COL]].sort_values("datetime")
-
-def make_state(historic_loads: pd.DataFrame, lmp_df: pd.DataFrame, forecast_df: pd.DataFrame | None) -> State:
-    df_load = (
-        historic_loads.rename(columns={"period": "datetime"})[
-            ["datetime", HIST_LOAD_COL]
-        ]
-        .copy()
+    # plant id can be any string identifier - not currently used in logic
+    state = State(
+        plant_id="plant_1",
+        discretizers={
+            "load": load_disc,
+            "forecast": forecast_disc,
+            "price": price_disc,
+        },
     )
-    df_load["datetime"] = pd.to_datetime(df_load["datetime"], utc=True)
 
-    dfs = {
-        "load": df_load,
-        "price": lmp_df,
-    }
+    state.load_state_data(
+        {
+            "load": load_df.rename(columns={"period": "datetime"}),
+            "price": price_df,
+        }
+    )
 
-    if forecast_df is not None:
-        df_f = forecast_df[["datetime", FORECAST_LOAD_COL]].copy()
-        df_f["datetime"] = pd.to_datetime(df_f["datetime"], utc=True)
-        dfs["forecast"] = df_f
-
-    state_discretizers = {
-        HIST_LOAD_COL: Discretizer(col=HIST_LOAD_COL, n_bins=N_LOAD_BINS),
-        PRICE_COL: Discretizer(col=PRICE_COL, n_bins=N_PRICE_BINS),
-    }
-
-    if forecast_df is not None:
-        state_discretizers[FORECAST_LOAD_COL] = Discretizer(
-            col=FORECAST_LOAD_COL,
-            n_bins=N_FORECAST_BINS,
-        )
-
-    #TODO: plant_id should work on a dict of ISOs instead of one
-    state = State(plant_id=ISO, discretizers=state_discretizers)
-    state.load_state_data(dfs, time_col="datetime")
+    # On first pass, discretize without any forecast data
     state.apply()
-    return state
+
+    return state, {
+        "load": load_disc,
+        "forecast": forecast_disc,
+        "price": price_disc,
+    }
+
+# When we call subsequent state.apply() during episodes, we will have forecast data
+def inject_epsisode_forecast(state: State, forecast_df: pd.DataFrame) -> None:
+    '''Injects 24-hour forecast data into the state for the episode'''
+    if not isinstance(state.raw_state_data, pd.DataFrame):
+        raise ValueError("State raw_state_data has not been intialized")
+    
+    df = state.raw_state_data
+
+    if FORECAST_LOAD_COL not in df.columns:
+        df[FORECAST_LOAD_COL] = np.nan
+
+    forecast_df = forecast_df.copy()
+    forecast_df["datetime"] = pd.to_datetime(forecast_df["datetime"], utc=True)
+
+    f = forecast_df.set_index("datetime")[FORECAST_LOAD_COL]
+    df.loc[f.index, FORECAST_LOAD_COL] = f.values
 
 def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
-    price_disc = Discretizer(col=PRICE_COL, n_bins=N_PRICE_BINS)
+    price_disc = Discretizer(col=PRICE_COL, n_bins=NUM_DISCRETIZER_BINS)
     price_disc.fit(lmp_df[[PRICE_COL]])
 
     qty_grid = np.linspace(0, MAX_BID_QUANTITY_MW, 100)
     qty_df = pd.DataFrame({ "quantity": qty_grid })
-    qty_disc = Discretizer(col="quantity", n_bins=N_QTY_BINS)
+    qty_disc = Discretizer(col="quantity", n_bins=NUM_DISCRETIZER_BINS)
     qty_disc.fit(qty_df)
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
-def train():
-
-    #TODO: use Enverus API to get historic loads
-
+def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
-    historic_loads = historic_load_api.get_market_loads()
+    load_df = historic_load_api.get_market_loads()
+    # Should be a redundant filter, but just in case
+    load_df = load_df[load_df["respondent"] == ISO].copy()
+    load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
+    load_df = load_df.sort_values("period")
 
-    try:
-        sarimax = SARIMAXLoadProjections(historic_loads)
-        forecast_df = sarimax.get_forecast_df()
-    except Exception as e:
-        print(f"Warning: SARIMAX model failed, continuing without it: {e}")
-        forecast_df = None
+    lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
+    lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
+    lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
+    lmp_df = lmp_df.sort_values("datetime")
 
-    lmp_df = read_lmp_data()
+    state, discretizers = build_state_and_discretizers(load_df, lmp_df)
 
-    state = make_state(historic_loads, lmp_df, forecast_df)
+    price_disc = discretizers["price"]
+
+    #TODO: Create quantity specific discretizer
+    quantity_disc = discretizers["load"]
+
     action_space = make_action_space(lmp_df)
 
-    #TODO: set market parameters appropriately, these are currently arbitrary
     market_params = MarketParams(
-        marginal_cost=20.0,
+        marginal_cost=20.0, 
         price_noise_std=5.0,
-        min_price=float(action_space.price_disc.edges_[0]),
-        max_price=float(action_space.price_disc.edges_[-1]),
+        min_price=float(price_disc.edges_[0]),
+        max_price=float(price_disc.edges_[-1]),
     )
     market_model = MarketModel(action_space, market_params)
 
-    #TODO: Explicitly pass in hyperparameters
-    agent = TabularQLearningAgent(num_actions = action_space.n_actions)
+    agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
-    # TODO: Come up with a non arbitrary temperature schedule
-    # Right now it is set to start off very exploratory and quickly become greedy 
-    initial_tau = 1.0
-    min_tau = 0.1
-    tau_decay = 0.99
+    if not isinstance(state.raw_state_data, pd.DataFrame):
+        raise ValueError("State raw_state_data has not been intialized")
+    
+    episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
+    episode_starts = episode_starts[:n_epsiodes] # Limit to n_episodes
 
-    for episode in range(N_EPSIODES):
-        # New episode on first observation
-        observation = state.reset(new_episode=(episode > 0))
-        state_key = agent.state_to_key(observation)
-        total_reward = 0.0
+    for ep_idx, start_idx in enumerate(episode_starts):
+        print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
+        cumulative_reward = 0
 
-        tau = max(min_tau, initial_tau * (tau_decay ** episode))
+        state.episode_start = start_idx
+        episode_start_ts = state.raw_state_data.index[start_idx]
 
-        # Ensure we don't go out of range
-        max_steps = min(MAX_STEPS_PER_EPISODE, state.n_steps() - LEAD_HOURS -1)
+        # Build history for SARIMAX only using data prior to episode start
+        history_mask = load_df["period"] < episode_start_ts
+        history_for_model = load_df.loc[history_mask].copy()
+        if history_for_model.empty:
+            # Minimum history requirement for start 
+            history_for_model = load_df.iloc[:state.window_size].copy()
+        sarimax = SARIMAXLoadProjections(history_for_model)
+        forecast_df = sarimax.get_forecast_df()
 
-        for t in range(max_steps):
-            # epsilon-greedy action selection
-            # action = agent.select_action(state_key)
+        inject_epsisode_forecast(state, forecast_df)
 
-            
-            # Boltzmann softmax action selection
-            action = agent.select_softmax_action(state_key, temperature=tau)
+        # Re-discretize now that we have forecast data
+        state.apply()
+        obs = state.reset(new_episode=False)
+        state_key = agent.state_to_key(obs)
 
-            current_time = state.current_time()
-            if state.raw_state_data is not None and current_time is not None:
-                delivery_time = current_time + pd.Timedelta(hours=LEAD_HOURS)
-                if delivery_time not in state.raw_state_data.index:
-                    print("Reached end of data for delivery time.")
-                    break
+        done = False
+        step_counter = 0
 
-                delivery_row = state.raw_state_data.loc[delivery_time]
-                forward_price = delivery_row[PRICE_COL]
+        while not done:
+            #TODO: Experiment with temperature parameter
+            action_idx = agent.select_softmax_action(state_key, temperature=1.0)
 
-                _, _, reward = market_model.clear_market_from_action(
-                    action, 
-                    forward_price
-                )
+            ts = state.timestamps[state.ptr]
 
-                next_observation, _, done, _ = state.step(action)
-                next_state_key = None if done else agent.state_to_key(next_observation)
+            # Bidding 24 hours in advance
+            delivery_time = ts + pd.Timedelta(hours=24)
 
-                if next_state_key is not None:
-                    agent.update_q_table(state_key, action, reward, next_state_key, done)
-                    state_key = next_state_key
-                    total_reward += reward
+            if delivery_time not in state.raw_state_data.index:
+                # If we don't have data for the delivery time, end episode
+                print(f"  No data for delivery time {delivery_time}, ending episode.")
+                done = True
+                break
 
-                if done:
-                    break
+            delivery_row = state.raw_state_data.loc[delivery_time]
+            price_val = delivery_row.get(PRICE_COL, np.nan)
+            if pd.isna(price_val):
+                price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
+        
+            _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
 
-            # Only used for epsilon-greedy
-            # agent.decay_epsilon()
+            next_obs, _, done, info = state.step()
+
+            # --- LOGGING ---
+            if step_counter == 0:
+                cumulative_reward = 0  # initialize at episode start
+
+            cumulative_reward += reward
 
             print(
-            f"Episode {episode + 1}/{N_EPSIODES} | "
-            f"steps: {t + 1} | "
-            f"total reward: {total_reward:.2f} | "
-            #f"epsilon: {agent.epsilon:.3f}"     -- epsilon-greedy
-            f"temperature: {tau:.3f}"           # -- softmax
+                f"[EP {ep_idx+1} | Step {step_counter}] "
+                f"ts={ts} | "
+                f"state_key={state_key} | "
+                f"action={action_idx} | "
+                f"price={price_val:.2f} | "
+                f"reward={reward:.4f} | "
+                f"cumulative_reward={cumulative_reward:.4f}"
             )
 
-    # TODO: Run backtesting on frozen Q-table
+            next_state_key = agent.state_to_key(next_obs)
+
+            agent.update_q_table(
+                state_key,
+                action_idx,
+                reward,
+                next_state_key,
+                done
+            )
+
+            state_key = next_state_key
+            obs = next_obs
+            step_counter += 1
+
+            if step_counter >= state.window_size:
+                done = True
+
+        print(f"Episode {ep_idx+1} finished after {step_counter} steps")
+         
     with open("q_table.pkl", "wb") as f:
         pickle.dump(agent.Q, f)
 
     with open("policy.pkl", "wb") as f:
-        pickle.dump(agent.extract_softmax_policy(temperature=0.1), f)
+        pickle.dump(agent.extract_softmax_policy(), f)
     
-            
-            
-    print("Training complete.")
+    print("Training complete. Q-table and policy saved.")
     return agent, state, action_space, market_model
 
 if __name__ == "__main__":
-    train()
+    train(n_epsiodes=20)

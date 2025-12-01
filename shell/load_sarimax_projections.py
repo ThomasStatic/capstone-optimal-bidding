@@ -59,12 +59,26 @@ class SARIMAXLoadProjections:
 
     def _fit_sarimax_model(self):
         '''Fit SARIMAX model to the transformed load data.'''
-        train_end = self.y_trans.index.max() - pd.Timedelta(days=14)
-        y_tr, y_te = self.y_trans[:train_end], self.y_trans[train_end + pd.Timedelta(hours=1):]
+        if self.y_trans.empty:
+            raise ValueError("Transformed load data is empty. Cannot fit SARIMAX model.")
         
-        exog_tr, exog_te = self.exogenous_df.loc[y_tr.index], self.exogenous_df.loc[y_te.index]
-        exog_tr = exog_tr.astype(float) # Ensure exogenous variables are float type as numpy causes errors otherwise
-        exog_te = exog_te.astype(float)
+        train_end = self.y_trans.index.max() - pd.Timedelta(days=14)
+
+        y_tr = self.y_trans[:train_end]
+        y_te = self.y_trans[train_end + pd.Timedelta(hours=1):]
+
+        y_tr = self.y_trans[:train_end]
+        y_te = self.y_trans[train_end + pd.Timedelta(hours=1):]
+
+        if y_tr.empty:
+            # Fallback: use all avail data for training
+            y_tr = self.y_trans.copy()
+            exog_tr = self.exogenous_df.astype(float)
+
+            exog_te = self.exogenous_df.astype(float)
+        else:
+            exog_tr = self.exogenous_df.loc[y_tr.index].astype(float)
+            exog_te = self.exogenous_df.loc[y_te.index].astype(float)
 
         model = SARIMAX(
             y_tr,
@@ -86,7 +100,11 @@ class SARIMAXLoadProjections:
 
         # Forecast the next 24 * 7 hours
         steps = 24 * 7
-        exog_future = exog_te.iloc[:steps].astype(float) # we only need exogenous variables for the forecast horizon
+
+        if exog_te is not None and not exog_te.empty:
+            exog_future = exog_te.iloc[:steps].astype(float)
+        else:
+            exog_future = None
 
         forecast = fitted_model.get_forecast(steps=steps, exog=exog_future)
         forcast_ci = forecast.conf_int()
@@ -108,9 +126,6 @@ class SARIMAXLoadProjections:
         df_forecast = df_forecast.reset_index().rename(columns={'index': 'datetime'})
 
         self.forecast_df = df_forecast
-
-        print("Forecast for the next 24 hours:")
-        print(df_forecast)
 
     def get_forecast_df(self) -> DataFrame:
         if not hasattr(self, 'forecast_df'):
