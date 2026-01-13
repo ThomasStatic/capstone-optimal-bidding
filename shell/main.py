@@ -230,7 +230,7 @@ def run_baselines(
         baseline: str,
         n_episodes: int,
         markup: float,
-        quantile:float
+        quantile:float,
 ):
     load_df, lmp_df = load_data()
     state, action_space, market_model = build_world(load_df, lmp_df)  
@@ -260,7 +260,8 @@ def run_baselines(
         load_df=load_df,
         lmp_df=lmp_df,
         n_episodes=n_episodes,
-        inject_forecast_fn=inject_epsisode_forecast
+        inject_forecast_fn=inject_epsisode_forecast,
+        verbose = args.verbose
     )
 
 def parse_args():
@@ -269,6 +270,8 @@ def parse_args():
     p.add_argument("--mode", choices=["train", "baseline"], default="train")
 
     p.add_argument("--n_episodes", type=int, default=20)
+
+    p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     # baseline specific
     p.add_argument("--baseline", choices=["cost_plus", "hist_quantile"], default="cost_plus")
