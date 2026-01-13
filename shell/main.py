@@ -114,34 +114,9 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
 
 
 def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
-    historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
-    load_df = historic_load_api.get_market_loads()
-    # Should be a redundant filter, but just in case
-    load_df = load_df[load_df["respondent"] == ISO].copy()
-    load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
-    load_df = load_df.sort_values("period")
+    load_df, lmp_df = load_data()
 
-    lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
-    lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
-    lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
-    lmp_df = lmp_df.sort_values("datetime")
-
-    state, discretizers = build_state_and_discretizers(load_df, lmp_df)
-
-    price_disc = discretizers["price"]
-
-    #TODO: Create quantity specific discretizer
-    quantity_disc = discretizers["load"]
-
-    action_space = make_action_space(lmp_df)
-
-    market_params = MarketParams(
-        marginal_cost=20.0, 
-        price_noise_std=5.0,
-        min_price=float(price_disc.edges_[0]),
-        max_price=float(price_disc.edges_[-1]),
-    )
-    market_model = MarketModel(action_space, market_params)
+    state, action_space, market_model = build_world(load_df, lmp_df)
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
