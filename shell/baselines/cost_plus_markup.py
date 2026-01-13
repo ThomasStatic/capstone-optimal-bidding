@@ -1,6 +1,7 @@
+from dataclasses import dataclass
 from shell.action_space import ActionSpace
 
-
+@dataclass
 class CostPlusMarkupPolicy:
     """
     price = marginal_cost + markup
