@@ -84,6 +84,35 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
+    load_df = historic_load_api.get_market_loads()
+    load_df =load_df[load_df["respondent"] == ISO].copy()
+    load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
+    load_df = load_df.sort_values("period")
+
+    lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
+    lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
+    lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
+    lmp_df = lmp_df.sort_values("datetime")
+
+    return load_df, lmp_df
+
+def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, ActionSpace, MarketModel]:
+    state, _ = build_state_and_discretizers(load_df, lmp_df)
+    action_space = make_action_space(lmp_df)
+
+    # TODO: Come up with better market params
+    market_params = MarketParams(
+        marginal_cost=20.0, 
+        price_noise_std=5.0,
+        min_price=float(action_space.price_disc.edges_[0]),
+        max_price=float(action_space.price_disc.edges_[-1]),
+    )
+    market_model = MarketModel(action_space, market_params)
+    return state, action_space, market_model
+
+
 def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
     load_df = historic_load_api.get_market_loads()
