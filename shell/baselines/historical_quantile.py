@@ -9,7 +9,7 @@ class HistoricalQuantilePolicy:
     price = quantile of historical LMP conditioned on (day-of-week, hour)
     quantity = fixed quantity (MW)
     """
-    action_space = ActionSpace
+    action_space: ActionSpace
     lmp_df: pd.DataFrame
     quantile: float
     quantity_mw: float
@@ -48,5 +48,4 @@ class HistoricalQuantilePolicy:
         key = (int(ts.dayofweek), int(ts.hour))
         price = float(self.table.get(key, self.fallback_price))
         qty = float(self.quantity_mw)
-        assert not isinstance(self.action_space, type), "action_space must be an instance, not a class"
         return self.action_space.encode_from_values(price=price, quantity=qty)
