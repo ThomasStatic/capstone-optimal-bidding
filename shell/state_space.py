@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 from typing import Dict, Optional
-from linear_approximator import Discretizer
+from shell.linear_approximator import Discretizer
 from dataclasses import dataclass
 from pandas.api.types import is_numeric_dtype
 
