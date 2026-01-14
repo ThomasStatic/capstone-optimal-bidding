@@ -14,16 +14,20 @@ class State:
         _type_: Dynamic State Space object.
     """
 
-    def __init__(self, plant_id: str, discretizers: Dict[str, "Discretizer"]):
+    def __init__(self, plant_id: str, discretizers: Dict[str, "Discretizer"], seed: int = 42):
         """
-
         Args:
             plant_id (str): Plant ID for state space
             discretizers (Dict[str, Discretizer]): Discretization function
-        """        
+            seed (int): Random seed (mainly for reproducible testing / future stochastic features)
+        """
         self.plant_id = plant_id
         self.plant_data: Optional[pd.DataFrame] = None  # raw plant data
         self.discretizers = discretizers
+
+        # NEW: store seed + rng (rng not used in core logic yet, but used for reproducible tests)
+        self.seed = seed
+        self._rng = np.random.default_rng(self.seed)
 
         self.state_vars: Optional[list] = None  # List of variables utilized
         self.raw_state_data: Optional[pd.DataFrame] = None  # original raw data
@@ -36,7 +40,6 @@ class State:
         self.window_size = self.window_days * 24  # 336 rows (hourly)
         self.episode_start = 0
 
-
     def load_plant_data(self, df: pd.DataFrame, index_col="plant_id"):
         """Loads raw plant data.
 
@@ -45,13 +48,13 @@ class State:
         """
         if self.plant_id is None:
             raise RuntimeError("Plant ID not set.")
-        
+
         if index_col not in df.columns:
             raise ValueError(f"Index column '{index_col}' not found in data.")
 
         if self.plant_id not in df[index_col].values:
             raise ValueError(f"Plant ID {self.plant_id} not found in data.")
-        
+
         self.plant_data = df[df[index_col] == self.plant_id].copy()
 
     def load_state_data(self, dfs: Dict[str, pd.DataFrame], time_col="datetime"):
@@ -63,13 +66,12 @@ class State:
 
         Raises:
             ValueError: Raises if incorrect time index provided.
-        """        """
-        dfs is dict: {name: df}
-        Each df must have a datetime column.
         """
+        # dfs is dict: {name: df}
+        # Each df must have a datetime column.
         aligned = []
 
-        ## Pre-processing of dataframes
+        # Pre-processing of dataframes
         for name, df in dfs.items():
             if df is None:
                 continue
@@ -81,7 +83,7 @@ class State:
             temp = temp.set_index(time_col)
             aligned.append(temp)
 
-        ## Merge all dataframes on time index
+        # Merge all dataframes on time index
         if len(aligned) == 0:
             self.raw_state_data = pd.DataFrame()
         elif len(aligned) == 1:
@@ -95,10 +97,9 @@ class State:
         if self.raw_state_data is not None:
             IGNORED_COLS = {"lower_ci", "upper_ci"}
             self.vars = [
-                c for c in self.raw_state_data.columns 
+                c for c in self.raw_state_data.columns
                 if is_numeric_dtype(self.raw_state_data[c]) and c not in IGNORED_COLS
             ]
-
 
     def apply(self):
         """Applies Descriptizers to raw_state_data.
@@ -108,15 +109,13 @@ class State:
 
         Returns:
             _type_: Dataframe with discretized state space.
-        """        """
-        Apply each discretizer to its configured column.
-        Creates self.data: time-indexed discretized state space.
         """
+        # Apply each discretizer to its configured column.
+        # Creates self.data: time-indexed discretized state space.
         if self.raw_state_data is None or not isinstance(self.raw_state_data, pd.DataFrame):
             raise RuntimeError("No raw_state_data available. Call load_state_data() first.")
 
         vars_list = self.vars
-
         out_cols = {}
 
         for col in vars_list:
@@ -128,7 +127,6 @@ class State:
                 pd.to_numeric(series_df[col], errors="coerce")
                 .replace([np.inf, -np.inf], np.nan)
             )
-
 
             # Find provided discretizer (match on d.col)
             disc = None
@@ -154,14 +152,14 @@ class State:
 
         def map_hour_to_period(h):
             if 0 <= h <= 5:
-                return 0 # night
+                return 0  # night
             if 6 <= h <= 10:
-                return 1 # morning
+                return 1  # morning
             if 11 <= h <= 15:
-                return 2 # afternoon
+                return 2  # afternoon
             if 16 <= h <= 20:
-                return 3 # evening
-            return 4 # late
+                return 3  # evening
+            return 4  # late
 
         time_of_day = hours.map(map_hour_to_period).astype(int)
         out_cols["time_of_day"] = pd.Series(time_of_day, index=self.raw_state_data.index)
@@ -178,7 +176,6 @@ class State:
         end = start + self.window_size
 
         self.state_data = full_state.iloc[start:end]
-
         self.timestamps = list(self.state_data.index)
         self.ptr = 0
 
@@ -205,7 +202,7 @@ class State:
                     self.episode_start = 0  # optional: loop back
 
             self.apply()
-            
+
         self.ptr = 0
         return self.current_row().to_numpy()
 
@@ -225,7 +222,6 @@ class State:
         else:
             done = False
 
-
         next_state = self.current_row().to_numpy()
 
         # placeholder exogenous reward
@@ -237,7 +233,6 @@ class State:
         }
 
         return next_state, reward, done, info
-
 
     def change_state(self, step_index: int):
         """
@@ -272,7 +267,6 @@ class State:
 
         raise KeyError(f"{key} is not a column or timestamp.")
 
-
     def append(self, new_df: pd.DataFrame, time_col="datetime"):
         """
         Append new rows to the raw dataset, maintaining a consistent index.
@@ -287,18 +281,18 @@ class State:
         else:
             self.raw_state_data = pd.concat([self.raw_state_data, temp]).sort_index()
 
-
     def n_steps(self):
         return len(self.timestamps)
 
-    #TODO: rename to get current time
+    # TODO: rename to get current time
     def current_time(self):
         return self.timestamps[self.ptr] if self.timestamps else None
 
     def __repr__(self):
         return f"State(plant_id={self.plant_id}, step={self.ptr}, time={self.current_time()})"
 
-## Test on Dummy Data
+
+# Test on Dummy Data
 if __name__ == "__main__":
 
     discretizers = {
@@ -307,14 +301,16 @@ if __name__ == "__main__":
         "gas": Discretizer(col="gas_index")
     }
 
-    state = State(plant_id="2343", discretizers=discretizers)
+    # NEW: seed lives in State
+    state = State(plant_id="2343", discretizers=discretizers, seed=42)
 
     # --- Two years of hourly data ---
     start = pd.Timestamp("2023-01-01 00:00:00")
     periods = 2 * 365 * 24
     idx = pd.date_range(start=start, periods=periods, freq="h")
 
-    rng = np.random.default_rng(seed=42)
+    # use state's seeded RNG for deterministic dummy data
+    rng = state._rng
 
     daily = 100 + 30 * np.sin(2 * np.pi * (idx.hour / 24))
     yearly = 20 * np.sin(2 * np.pi * (idx.dayofyear / 365))

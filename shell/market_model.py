@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from typing import Tuple
-import random
+from typing import Tuple, Optional
+import numpy as np
 
 
 @dataclass
@@ -26,16 +26,18 @@ class MarketModel:
       - computes the reward (profit).
     """
 
-    def __init__(self, action_space, params: MarketParams) -> None:
+    def __init__(self, action_space, params: MarketParams, *, seed: Optional[int] = None) -> None:
         self.action_space = action_space
         self.params = params
+        # NEW: deterministic RNG for all stochastic behavior in this model
+        self._rng = np.random.default_rng(seed)
 
     def sample_clearing_price(self, forecast_price: float) -> float:
         """
         clearing_price = forecast_price + Gaussian noise,
         then clipped into [min_price, max_price].
         """
-        noise = random.gauss(0.0, self.params.price_noise_std)
+        noise = float(self._rng.normal(0.0, self.params.price_noise_std))
         price = forecast_price + noise
         price = max(self.params.min_price, min(self.params.max_price, price))
         return price
@@ -54,7 +56,7 @@ class MarketModel:
 
         # treat very small differences as equality (due to float noise)
         if abs(diff) < eps:
-            return random.random()
+            return float(self._rng.random())
 
         if bid_price < clearing_price:
             return 1.0  # cheaper than market -> fully dispatched
