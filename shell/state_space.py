@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 from typing import Dict, Optional
-from linear_approximator import Discretizer
+from shell.linear_approximator import Discretizer
 from dataclasses import dataclass
 from pandas.api.types import is_numeric_dtype
 
@@ -154,16 +154,14 @@ class State:
 
         def map_hour_to_period(h):
             if 0 <= h <= 5:
-                return 0
-            if 7 <= h <= 10:
-                return 1
+                return 0 # night
+            if 6 <= h <= 10:
+                return 1 # morning
             if 11 <= h <= 15:
-                return 2
-            if 15 <= h <= 20:
-                return 3
-            if 21 <= h <= 23:
-                return 4
-            return 5
+                return 2 # afternoon
+            if 16 <= h <= 20:
+                return 3 # evening
+            return 4 # late
 
         time_of_day = hours.map(map_hour_to_period).astype(int)
         out_cols["time_of_day"] = pd.Series(time_of_day, index=self.raw_state_data.index)

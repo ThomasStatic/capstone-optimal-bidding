@@ -1,20 +1,25 @@
+import argparse
 import pandas as pd
 import numpy as np
 import pickle
 
-from market_loads_api import ISODemandController
-from load_sarimax_projections import SARIMAXLoadProjections
-from action_space import ActionSpace
-from linear_approximator import (
+from shell.market_loads_api import ISODemandController
+from shell.load_sarimax_projections import SARIMAXLoadProjections
+from shell.action_space import ActionSpace
+from shell.linear_approximator import (
     HIST_LOAD_COL,
     FORECAST_LOAD_COL,
     LMP_CSV_PATH,
     PRICE_COL,
     Discretizer,
 )
-from market_model import MarketModel, MarketParams
-from state_space import State
-from tabular_q_agent import TabularQLearningAgent
+from shell.market_model import MarketModel, MarketParams
+from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
+from shell.baselines.historical_quantile import HistoricalQuantilePolicy
+from shell.evaluations.baseline_runner import run_policy_on_episodes
+from shell.evaluations.policy_types import Policy
+from shell.state_space import State
+from shell.tabular_q_agent import TabularQLearningAgent
 
 ISO = "ERCOT"
 START_DATE = "2023-01-01"
@@ -84,11 +89,10 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
-def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
     load_df = historic_load_api.get_market_loads()
-    # Should be a redundant filter, but just in case
-    load_df = load_df[load_df["respondent"] == ISO].copy()
+    load_df =load_df[load_df["respondent"] == ISO].copy()
     load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
     load_df = load_df.sort_values("period")
 
@@ -97,22 +101,27 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
     lmp_df = lmp_df.sort_values("datetime")
 
-    state, discretizers = build_state_and_discretizers(load_df, lmp_df)
+    return load_df, lmp_df
 
-    price_disc = discretizers["price"]
-
-    #TODO: Create quantity specific discretizer
-    quantity_disc = discretizers["load"]
-
+def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, ActionSpace, MarketModel]:
+    state, _ = build_state_and_discretizers(load_df, lmp_df)
     action_space = make_action_space(lmp_df)
 
+    # TODO: Come up with better market params
     market_params = MarketParams(
         marginal_cost=20.0, 
         price_noise_std=5.0,
-        min_price=float(price_disc.edges_[0]),
-        max_price=float(price_disc.edges_[-1]),
+        min_price=float(action_space.price_disc.edges_[0]),
+        max_price=float(action_space.price_disc.edges_[-1]),
     )
     market_model = MarketModel(action_space, market_params)
+    return state, action_space, market_model
+
+
+def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
+    load_df, lmp_df = load_data()
+
+    state, action_space, market_model = build_world(load_df, lmp_df)
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
@@ -216,5 +225,70 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     print("Training complete. Q-table and policy saved.")
     return agent, state, action_space, market_model
 
+def run_baselines(
+        *, # Keyward-only arguments since complex signature
+        baseline: str,
+        n_episodes: int,
+        markup: float,
+        quantile:float,
+):
+    load_df, lmp_df = load_data()
+    state, action_space, market_model = build_world(load_df, lmp_df)  
+    
+    policy: Policy
+    if baseline == "cost_plus":
+        policy = CostPlusMarkupPolicy(
+            action_space = action_space,
+            marginal_cost = 20.0,
+            markup = markup,
+            quantity_mw = MAX_BID_QUANTITY_MW
+        )
+    elif baseline == "hist_quantile":
+        policy = HistoricalQuantilePolicy(
+            action_space = action_space,
+            lmp_df= lmp_df,
+            quantile = quantile,
+            quantity_mw = MAX_BID_QUANTITY_MW
+        )
+    else:
+        raise ValueError(f"Unknown baseline: {baseline}")
+    
+    df = run_policy_on_episodes(
+        policy=policy,
+        state=state,
+        market_model=market_model,
+        load_df=load_df,
+        lmp_df=lmp_df,
+        n_episodes=n_episodes,
+        inject_forecast_fn=inject_epsisode_forecast,
+        verbose = args.verbose
+    )
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    
+    p.add_argument("--mode", choices=["train", "baseline"], default="train")
+
+    p.add_argument("--n_episodes", type=int, default=20)
+
+    p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    # baseline specific
+    p.add_argument("--baseline", choices=["cost_plus", "hist_quantile"], default="cost_plus")
+    p.add_argument("--markup", type=float, default=10.0, help="Markup for cost_plus baseline")
+    p.add_argument("--quantile", type=float, default=0.7, help="Quantile for hist_quantile baseline")
+
+    return p.parse_args()
+
 if __name__ == "__main__":
-    train(n_epsiodes=20)
+    args = parse_args()
+
+    if args.mode == "train":
+        train(n_epsiodes=args.n_episodes)
+    elif args.mode == "baseline":
+        run_baselines(
+            baseline=args.baseline,
+            n_episodes=args.n_episodes,
+            markup=args.markup,
+            quantile=args.quantile
+        )
