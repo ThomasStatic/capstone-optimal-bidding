@@ -1,4 +1,6 @@
+from typing import Any, Optional
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 PRICE_COL = "lmpPrice"
@@ -15,7 +17,7 @@ class Discretizer:
         self.col = col
         self.n_bins = n_bins
         self.methods = ["uniform", "quantile", "sigma", "hybrid"]
-        self.edges_ = None
+        self.edges_: Optional[npt.NDArray[np.floating[Any]]] = None
         self.best_method_ = None
         self.metrics_ = {}
 

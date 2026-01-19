@@ -232,7 +232,7 @@ class State:
         reward = 0.0
 
         info = {
-            "timestamp": self.current_time(),
+            "timestamp": self.get_current_time(),
             "step": self.ptr
         }
 
@@ -291,13 +291,11 @@ class State:
     def n_steps(self):
         return len(self.timestamps)
 
-    #TODO: rename to get current time
-    def current_time(self):
+    def get_current_time(self):
         return self.timestamps[self.ptr] if self.timestamps else None
 
     def __repr__(self):
-        return f"State(plant_id={self.plant_id}, step={self.ptr}, time={self.current_time()})"
-
+        return f"State(plant_id={self.plant_id}, step={self.ptr}, time={self.get_current_time()})"
 ## Test on Dummy Data
 if __name__ == "__main__":
 
@@ -351,7 +349,7 @@ if __name__ == "__main__":
             obs = state.reset(new_episode=True)
 
         print("Initial state:", obs)
-        print("Window start:", state.current_time())
+        print("Window start:", state.get_current_time())
         print("Window end:", state.timestamps[-1])
 
         done = False
