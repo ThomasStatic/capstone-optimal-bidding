@@ -53,10 +53,13 @@ class TabularQLearningAgent:
             best_actions = np.flatnonzero(q_values == max_q)
             return int(self._rng.choice(best_actions))
         
-    def get_softmax_action_probs(self, state_key: StateKey, temperature: float = 1.0) -> np.ndarray:
+    def get_softmax_action_probs(self, state_key: StateKey, temperature: float | None = None) -> np.ndarray:
         self._ensure_state(state_key)
         q_values = self.Q[state_key]
         
+        if temperature is None:
+            temperature = self.temperature_from_qgap(q_values, p_star=0.8)
+
         # Temperature must be positive for softmax, fallback to epsilon greedy
         if temperature <= 0:
             probs = np.zeros_like(q_values, dtype=float)
@@ -94,3 +97,25 @@ class TabularQLearningAgent:
 
     def decay_epsilon(self) -> None:
         self.epsilon *= self.epsilon_decay
+
+    def temperature_from_qgap(
+        self,
+        q_values: np.ndarray, 
+        p_star: float = 0.8, 
+        t_min: float = 0.05, 
+        t_max:float = 5.0
+    ) -> float:
+        q = np.asarray(q_values, dtype=float)
+        if q.size < 2:
+            return 1.0  # No gap if only one action
+        
+        top2 = np.partition(q, -2)[-2:]
+        q2, q1 = np.sort(top2)  # q1 >= q2
+        gap = float(q1 - q2)
+
+        if gap <= 1e-12:
+            return t_max
+        
+        denom = np.log(p_star / (1.0 - p_star))
+        T = gap / denom
+        return float(np.clip(T, t_min, t_max))

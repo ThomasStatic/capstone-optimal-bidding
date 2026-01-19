@@ -139,7 +139,6 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
         raise RuntimeError("price_disc.edges_ is None; call fit(...) first.")
     
     marginal_cost, price_noise_std = infer_market_params_from_lmp(lmp_df, PRICE_COL)
-    print(f"Inferred marginal cost: {marginal_cost:.2f}, price noise std: {price_noise_std:.2f}")
     market_params = MarketParams(
         marginal_cost=marginal_cost, 
         price_noise_std=price_noise_std,
@@ -190,8 +189,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         step_counter = 0
 
         while not done:
-            #TODO: Experiment with temperature parameter
-            action_idx = agent.select_softmax_action(state_key, temperature=1.0)
+            action_idx = agent.select_softmax_action(state_key)
 
             ts = state.timestamps[state.ptr]
 
