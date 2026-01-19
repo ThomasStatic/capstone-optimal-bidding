@@ -103,17 +103,46 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     return load_df, lmp_df
 
+def infer_market_params_from_lmp(
+    lmp_df: pd.DataFrame,
+    price_col: str,
+    *, # Keyword-only arguments
+    mc_tail_q: float = 0.25, # use lower 25% of lmp (i.e. when market is slack)
+    vol_clip_q: float = 0.995, # clip extreme prices
+) -> tuple[float, float]:
+    '''Infer marginal cost from historical LMP data'''
+    price_series = pd.to_numeric(lmp_df[price_col], errors="coerce").dropna()
+
+    cutoff_price = price_series.quantile(mc_tail_q)
+    marginal_cost = price_series[price_series <= cutoff_price].mean()
+
+    diffs = price_series.diff().dropna()
+    cap = diffs.abs().quantile(vol_clip_q)
+    diffs = diffs.clip(-cap, cap)
+    med = float(np.median(diffs))
+    mad = float(np.median(np.abs(diffs - med)))
+    price_noise_std = mad * 1.4826  # converts MAD to std under normality assumption
+
+    if not np.isfinite(marginal_cost):
+        marginal_cost = float(price_series.quantile(0.10))
+    if not np.isfinite(price_noise_std):
+        price_noise_std = float(diffs.std(ddof=0)) if len(diffs) else 0.0
+
+    return marginal_cost, price_noise_std
+
 def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, ActionSpace, MarketModel]:
     state, _ = build_state_and_discretizers(load_df, lmp_df)
     action_space = make_action_space(lmp_df)
 
-    # TODO: Come up with better market params
     price_edges = action_space.price_disc.edges_
     if price_edges is None:
         raise RuntimeError("price_disc.edges_ is None; call fit(...) first.")
+    
+    marginal_cost, price_noise_std = infer_market_params_from_lmp(lmp_df, PRICE_COL)
+    print(f"Inferred marginal cost: {marginal_cost:.2f}, price noise std: {price_noise_std:.2f}")
     market_params = MarketParams(
-        marginal_cost=20.0, 
-        price_noise_std=5.0,
+        marginal_cost=marginal_cost, 
+        price_noise_std=price_noise_std,
         min_price=float(price_edges[0]),
         max_price=float(price_edges[-1]),
     )
@@ -238,11 +267,13 @@ def run_baselines(
     load_df, lmp_df = load_data()
     state, action_space, market_model = build_world(load_df, lmp_df)  
     
+    marginal_cost, _ = infer_market_params_from_lmp(lmp_df, PRICE_COL)
+
     policy: Policy
     if baseline == "cost_plus":
         policy = CostPlusMarkupPolicy(
             action_space = action_space,
-            marginal_cost = 20.0,
+            marginal_cost = marginal_cost,
             markup = markup,
             quantity_mw = MAX_BID_QUANTITY_MW
         )
