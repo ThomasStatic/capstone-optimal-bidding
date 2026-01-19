@@ -3,21 +3,27 @@ from typing import Any, Tuple
 
 import numpy as np
 
+from shell.linear_approximator import Discretizer
+
 
 @dataclass
 class ActionSpace:
     """
     Discrete action space for bidding in the power market.
-
     Each action corresponds to a (price, quantity) pair, where both dimensions
-
     """
-
-    #TODO: specify types for discretizers
-    price_disc: Any       # fitted discretizer for bid price
-    quantity_disc: Any    # fitted discretizer for bid quantity
+    price_disc: Discretizer       # fitted discretizer for bid price
+    quantity_disc: Discretizer    # fitted discretizer for bid quantity
 
     def __post_init__(self) -> None:
+        price_edges = self.price_disc.edges_
+        qty_edges = self.quantity_disc.edges_
+        if price_edges is None:
+            raise ValueError("price_disc.edges_ is None; call fit(...) first.")
+        if qty_edges is None:
+            raise ValueError("quantity_disc.edges_ is None; call fit(...) first.")
+        
+
         # Check that the discretizers look fitted and have edges_
         for name, disc in (("price_disc", self.price_disc),
                            ("quantity_disc", self.quantity_disc)):
@@ -29,8 +35,8 @@ class ActionSpace:
                 raise ValueError(f"{name}.edges_ must have at least 2 entries (one bin).")
 
         # Number of bins is implied by the edges: n_bins = len(edges) - 1
-        self.n_price_bins: int = len(self.price_disc.edges_) - 1
-        self.n_quantity_bins: int = len(self.quantity_disc.edges_) - 1
+        self.n_price_bins: int = len(price_edges) - 1
+        self.n_quantity_bins: int = len(qty_edges) - 1
         self.n_actions: int = self.n_price_bins * self.n_quantity_bins
 
         if self.n_price_bins <= 0 or self.n_quantity_bins <= 0:
@@ -75,12 +81,20 @@ class ActionSpace:
         assign each value to a bin, then flattens (price_bin, quantity_bin)
         into a single action index.
         """
+
+        price_edges = self.price_disc.edges_
+        qty_edges = self.quantity_disc.edges_
+        if price_edges is None:
+            raise RuntimeError("price_disc.edges_ is None; call fit(...) first.")
+        if qty_edges is None:
+            raise RuntimeError("quantity_disc.edges_ is None; call fit(...) first.")
+
         # Map price to a price bin
-        p_idx = np.digitize([price], self.price_disc.edges_)[0] - 1
+        p_idx = np.digitize([price], price_edges)[0] - 1
         p_idx = int(np.clip(p_idx, 0, self.n_price_bins - 1))
 
         # Map quantity to a quantity bin
-        q_idx = np.digitize([quantity], self.quantity_disc.edges_)[0] - 1
+        q_idx = np.digitize([quantity], qty_edges)[0] - 1
         q_idx = int(np.clip(q_idx, 0, self.n_quantity_bins - 1))
 
         return self.pair_to_index(p_idx, q_idx)
@@ -93,16 +107,23 @@ class ActionSpace:
         The representative value for a bin is taken as the centre of the bin:
             (left_edge + right_edge) / 2.
         """
+        price_edges = self.price_disc.edges_
+        qty_edges = self.quantity_disc.edges_
+        if price_edges is None:
+            raise RuntimeError("price_disc.edges_ is None; call fit(...) first.")
+        if qty_edges is None:
+            raise RuntimeError("quantity_disc.edges_ is None; call fit(...) first.")
+
         p_bin, q_bin = self.index_to_pair(action_index)
 
         # Price value = centre of its bin
-        p_left = self.price_disc.edges_[p_bin]
-        p_right = self.price_disc.edges_[p_bin + 1]
+        p_left = price_edges[p_bin]
+        p_right = price_edges[p_bin + 1]
         price = 0.5 * (p_left + p_right)
 
         # Quantity value = centre of its bin
-        q_left = self.quantity_disc.edges_[q_bin]
-        q_right = self.quantity_disc.edges_[q_bin + 1]
+        q_left = qty_edges[q_bin]
+        q_right = qty_edges[q_bin + 1]
         quantity = 0.5 * (q_left + q_right)
 
         return float(price), float(quantity)

@@ -108,11 +108,14 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     action_space = make_action_space(lmp_df)
 
     # TODO: Come up with better market params
+    price_edges = action_space.price_disc.edges_
+    if price_edges is None:
+        raise RuntimeError("price_disc.edges_ is None; call fit(...) first.")
     market_params = MarketParams(
         marginal_cost=20.0, 
         price_noise_std=5.0,
-        min_price=float(action_space.price_disc.edges_[0]),
-        max_price=float(action_space.price_disc.edges_[-1]),
+        min_price=float(price_edges[0]),
+        max_price=float(price_edges[-1]),
     )
     market_model = MarketModel(action_space, market_params)
     return state, action_space, market_model
