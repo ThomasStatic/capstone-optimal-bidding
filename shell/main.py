@@ -154,6 +154,12 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
     state, action_space, market_model = build_world(load_df, lmp_df)
 
+    price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
+    max_notional = float(MAX_BID_QUANTITY_MW * price_q)
+
+    if(args.verbose):
+        print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
+
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
@@ -189,7 +195,13 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         step_counter = 0
 
         while not done:
-            action_idx = agent.select_softmax_action(state_key)
+            action_idx_raw = agent.select_softmax_action(state_key)
+
+            action_idx, clip_info = action_space.project_to_feasible(
+                action_idx_raw,
+                max_quantity=MAX_BID_QUANTITY_MW,
+                max_notional=max_notional,
+            )
 
             ts = state.timestamps[state.ptr]
 
@@ -208,6 +220,19 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
                 price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
         
             _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
+
+            if args.risk_penalty_lambda > 0.0 and bool(clip_info["clipped"]):
+                # relative penalty based on how far over notional raw action was
+                orig_notional = float(clip_info["original_notional"])
+                if max_notional > 1e-12:
+                    severity = max(0.0, (orig_notional - max_notional) / max_notional)
+                    if args.verbose: 
+                        print(f"[Risk Penalty] step={step_counter} | orig_notional={orig_notional:.4f} | max_notional={max_notional:.4f} | severity={severity:.4f}")
+                        
+                else:
+                    severity = 0.0
+                penalty = float(args.risk_penalty_lambda * (1.0 + severity))
+                reward -= penalty
 
             next_obs, _, done, info = state.step()
 
@@ -309,6 +334,11 @@ def parse_args():
     p.add_argument("--baseline", choices=["cost_plus", "hist_quantile"], default="cost_plus")
     p.add_argument("--markup", type=float, default=10.0, help="Markup for cost_plus baseline")
     p.add_argument("--quantile", type=float, default=0.7, help="Quantile for hist_quantile baseline")
+
+    # risk constraints
+    p.add_argument("--max_notional_q", type=float, default=0.95, help="Quantile of |LMP| used to set max_notional")
+    p.add_argument("--risk_penalty_lambda", type=float, default=0.0, help="Penalty lambda for risk constraint violations")
+    p.add_argument("--max_drawdown", type=float, default=float("inf"), help="Maximum allowable drawdown over an episode. inf disables.")
 
     return p.parse_args()
 

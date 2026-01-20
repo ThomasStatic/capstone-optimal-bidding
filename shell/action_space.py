@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -127,3 +127,58 @@ class ActionSpace:
         quantity = 0.5 * (q_left + q_right)
 
         return float(price), float(quantity)
+    
+    def project_to_feasible(
+            self,
+            action_index: int,
+            *,
+            max_quantity: float,
+            max_notional: Optional[float] = None,
+    ) -> Tuple[int, Dict[str, float | bool]]:
+        """
+        Takes a discrete action index, clamps it to risk limits, then re-encodes back to a discrete action index.
+
+        Risk limits:
+           - qty <= max_quantity
+           - |price| * qty <= max_notional (if max_notional is not None)
+        """
+        orig_price, orig_qty = self.decode_to_values(action_index)
+
+        new_price = float(orig_price)
+        new_qty = float(np.clip(orig_qty, 0.0, max_quantity))
+
+        orig_notional = float(abs(orig_price) * orig_qty)
+        new_notional = float(abs(new_price) * new_qty)
+
+        clipped = False
+
+        if max_notional is not None and max_notional >= 0:
+            if abs(new_price) > 1e-12 and (abs(new_price) * new_qty) > max_notional:
+                # Reduce quantity to fit notional limit
+                new_qty = float(max_notional / abs(new_price))
+                new_qty = float(np.clip(new_qty, 0.0, max_quantity))
+                clipped = True
+
+        # If quantity clamp changed the quantity, mark as clipped
+        if abs(new_qty - orig_qty) > 1e-12:
+            clipped = True
+        
+        # Re-encode to nearest discrete action
+        projected_index = self.encode_from_values(new_price, new_qty)
+
+        # Decode to get final execution values
+        exec_price, exec_qty = self.decode_to_values(projected_index)
+        exec_notional = float(abs(exec_price) * exec_qty)
+
+        info = {
+            "clipped": clipped,
+            "original_price": float(orig_price),
+            "original_quantity": float(orig_qty),
+            "original_notional": float(orig_notional),
+            "executed_price": float(exec_price),
+            "executed_quantity": float(exec_qty),
+            "executed_notional": float(exec_notional),
+            "max_quantity": float(max_quantity),
+            "max_notional": float(max_notional) if max_notional is not None else float("nan"),
+        }
+        return projected_index, info
