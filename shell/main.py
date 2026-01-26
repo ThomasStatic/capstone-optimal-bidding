@@ -157,10 +157,30 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
+    marginal_cost, _ = infer_market_params_from_lmp(lmp_df, PRICE_COL)
+
+    cost_plus_policy = CostPlusMarkupPolicy(
+        action_space=action_space,
+        marginal_cost=marginal_cost,
+        markup=float(args.markup),
+        quantity_mw=MAX_BID_QUANTITY_MW
+    )
+    cost_plus_action_raw = cost_plus_policy.act(None)
+    cost_plus_action, _ = action_space.project_to_feasible(
+        cost_plus_action_raw,
+        max_quantity=MAX_BID_QUANTITY_MW,
+        max_notional=max_notional,
+    )
+
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
+
+    agent.warm_start_enabled = True
+    agent.warm_start_action = int(cost_plus_action)
+    agent.warm_start_q_value = 0.0
+    agent.warm_start_other_value = -1.0
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
@@ -219,6 +239,18 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
             if pd.isna(price_val):
                 price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
         
+            if state_key not in agent.Q:
+                # IMPORTANT: assumes clear_market_from_action is effectively stateless / deterministic given inputs
+                _, _, baseline_reward = market_model.clear_market_from_action(int(cost_plus_action), float(price_val))
+
+                margin = 1.0
+                agent.warm_start_state(
+                    key =state_key,
+                    preferred_action=int(cost_plus_action),
+                    preferred_q=float(baseline_reward) + margin,
+                    other_q=float(baseline_reward) - margin,
+                    only_if_unseen=True,
+                )
             _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
 
             if args.risk_penalty_lambda > 0.0 and bool(clip_info["clipped"]):

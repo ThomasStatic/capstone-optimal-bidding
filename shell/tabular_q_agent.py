@@ -56,7 +56,7 @@ class TabularQLearningAgent:
             key: StateKey,
             *,
             preferred_action: int,
-            preffered_q: float,
+            preferred_q: float,
             other_q: float = 0.0,
             only_if_unseen: bool = True
     ) -> None:
@@ -67,7 +67,7 @@ class TabularQLearningAgent:
         self.Q[key] = np.full(self.num_actions, float(other_q), dtype=float)
         a0 = int(preferred_action)
         if 0 <= a0 < self.num_actions:
-            self.Q[key][a0] = float(preffered_q)
+            self.Q[key][a0] = float(preferred_q)
     
     # epsilon-greedy action selection
     def select_action(self, state_key: StateKey) -> int:
