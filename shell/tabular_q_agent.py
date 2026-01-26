@@ -119,3 +119,25 @@ class TabularQLearningAgent:
         denom = np.log(p_star / (1.0 - p_star))
         T = gap / denom
         return float(np.clip(T, t_min, t_max))
+    
+    def flatten(Q: Dict[StateKey, np.ndarray]) -> np.ndarray:
+        return np.concatenate( # Flatten Q table
+                [Q[s] for s in sorted(Q.keys())]
+            ) if Q else np.array([])
+
+    def delta_q(self, initial_q: Dict[StateKey, np.ndarray])->float:
+        ## Compute via the L2 norm
+        all_states = set(initial_q.keys()) | set(self.Q.keys()) # Union of states (in case new states were added)
+
+        q_start = []
+        q_end = []
+
+        for s in sorted(all_states):
+            q_start.append(initial_q.get(s, np.zeros(self.num_actions)))
+            q_end.append(self.Q.get(s, np.zeros(self.num_actions)))
+
+        q_start_vec = np.concatenate(q_start)
+        q_end_vec = np.concatenate(q_end)
+
+        return float(np.linalg.norm(q_end_vec - q_start_vec, ord=2))
+        

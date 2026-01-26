@@ -1,1 +1,3 @@
-python -m shell.train --mode train --episodes 104 --verbose
+python -m shell.main --mode train --n_episodes 100 --train_episodes 100 --verbose
+
+python -m shell.main --mode train --n_episodes 126 --train_episodes 26

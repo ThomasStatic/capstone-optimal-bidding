@@ -167,7 +167,8 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     episode_variances = np.ndarray([])
     episode_variance_per_profits =  np.ndarray([])
     episode_metrics = []
-    train_episodes = 52
+    episode_q_deltas = np.ndarray([])
+    train_episodes = args.train_episodes
 
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
@@ -204,6 +205,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         done = False
         step_counter = 0
 
+        Q_start = {s: q.copy() for s, q in agent.Q.items()} # Take copy of initial Q table
         while not done:
             if ep_idx < train_episodes:
                 action_idx_raw = agent.select_softmax_action(state_key, temperature=1.0)
@@ -287,20 +289,24 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         print(f"Episode {ep_idx+1} finished after {step_counter} steps")
     
         if (args.verbose):
-            ## For plotting of profit
+            ## For plotting of profit and Q Values
             episode_profit = cumulative_reward.sum()
             episode_variance = cumulative_reward.var(ddof=1)
             episode_variance_per_profit = episode_variance / (abs(episode_profit) + 1e-8)
             episode_profits = np.append(episode_profits, episode_profit)
             episode_variances = np.append(episode_variances, episode_variance)
             episode_variance_per_profits = np.append(episode_variance_per_profits, episode_variance_per_profit)
+            delta_q = agent.delta_q(Q_start) # Q Deltas
+            episode_q_deltas = np.append(episode_q_deltas, delta_q)
             episode_metrics.append({
                 "episode": ep_idx + 1,
+                "delta_q": delta_q,
                 "profit": episode_profit,
                 "profit_variance": episode_variance,
                 "risk_adjusted_variance": episode_variance_per_profit,
                 "steps": step_counter,
-            }) 
+            })
+ 
     
     if args.verbose:
         ## Note that denote the plot pre and post burn in
@@ -336,7 +342,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
             alpha=0.15,
             label="Burn-in Period"
         )
-        plt.title("Intra-episode Profit Variance")
+        plt.title("Hour Variance per Episode")
         plt.xlabel("Episode")
         plt.ylabel("Variance")
         plt.legend()
@@ -354,7 +360,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
             alpha=0.15,
             label="Burn-in Period"
         )
-        plt.title("Risk-Adjusted Variance per Episode")
+        plt.title("Profit-Adjusted Hourly Variance per Episode")
         plt.xlabel("Episode")
         plt.ylabel("Variance / |Profit|")
         plt.legend()
@@ -362,6 +368,18 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
         # Save figure
         save_path = out_dir / f"profit_adjusted_episode_variances_{todaysdate}_{train_episodes}_epi.png"
+        plt.savefig(save_path)
+        plt.close()
+
+        plt.plot(episodes, episode_q_deltas, label="ΔQ (L2 norm)")
+        plt.title("Delta Q per Episode")
+        plt.xlabel("Episode")
+        plt.ylabel("Change in Q Value")
+        plt.legend()
+        plt.tight_layout()
+
+        # Save figure
+        save_path = out_dir / f"delta_q_per_episode_{todaysdate}_{train_episodes}_epi.png"
         plt.savefig(save_path)
         plt.close()
 
@@ -431,6 +449,8 @@ def parse_args():
     p.add_argument("--mode", choices=["train", "baseline"], default="train")
 
     p.add_argument("--n_episodes", type=int, default=20)
+
+    p.add_argument("--train_episodes", type=int, default=20)
 
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
