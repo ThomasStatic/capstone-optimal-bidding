@@ -157,10 +157,20 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
+
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
+
+    marginal_cost = float(market_model.params.marginal_cost)
+    cost_plus_policy = CostPlusMarkupPolicy(
+        action_space=action_space,
+        marginal_cost=marginal_cost,
+        markup=float(args.markup),
+        quantity_mw=MAX_BID_QUANTITY_MW,
+    )
+    baseline_action_idx = int(cost_plus_policy.act(None))
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
@@ -219,6 +229,17 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
             if pd.isna(price_val):
                 price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
         
+            if args.warm_start_q and state_key not in agent.Q:
+                baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
+
+                margin = 1.0
+                agent.warm_start_state(
+                    state_key,
+                    preferred_action=baseline_action_idx,
+                    preferred_q=baseline_reward + margin,
+                    other_q=baseline_reward - margin,
+                    only_if_unseen=True,
+                )
             _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
 
             if args.risk_penalty_lambda > 0.0 and bool(clip_info["clipped"]):
@@ -339,6 +360,13 @@ def parse_args():
     p.add_argument("--max_notional_q", type=float, default=0.95, help="Quantile of |LMP| used to set max_notional")
     p.add_argument("--risk_penalty_lambda", type=float, default=0.0, help="Penalty lambda for risk constraint violations")
     p.add_argument("--max_drawdown", type=float, default=float("inf"), help="Maximum allowable drawdown over an episode. inf disables.")
+
+    p.add_argument(
+        "--warm_start_q",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
+    )
 
     return p.parse_args()
 

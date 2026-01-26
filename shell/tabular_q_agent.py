@@ -20,6 +20,12 @@ class TabularQLearningAgent:
     Q: Dict[StateKey, np.ndarray] = field(default_factory=dict, init=False)
     _rng: np.random.Generator = field(init=False) # used for random exploration
 
+    warm_start_enabled: bool = True
+    warm_start_action: Optional[int] = None
+    warm_start_q_value: float = 0.0
+    warm_start_other_value: float = 0.0
+    warm_start_only_if_unseen: bool = True
+
     def __post_init__(self):
         self._rng = np.random.default_rng()
 
@@ -33,8 +39,35 @@ class TabularQLearningAgent:
         return tuple(int(v) for v in vals)
     
     def _ensure_state(self, key: StateKey) -> None:
+
+        # Cold start
         if key not in self.Q:
             self.Q[key] = np.zeros(self.num_actions, dtype=float)
+
+        # Warm start
+        if self.warm_start_enabled is True and self.warm_start_action is not None:
+            a0 = int(self.warm_start_action)
+            if 0 <= a0 < self.num_actions:
+                self.Q[key].fill(float(self.warm_start_other_value))
+                self.Q[key][a0] = float(self.warm_start_q_value)
+    
+    def warm_start_state(
+            self,
+            key: StateKey,
+            *,
+            preferred_action: int,
+            preferred_q: float,
+            other_q: float = 0.0,
+            only_if_unseen: bool = True
+    ) -> None:
+        """Warm start the Q-table (implemented with cost plus markup)"""
+        if only_if_unseen and key in self.Q:
+            return
+        
+        self.Q[key] = np.full(self.num_actions, float(other_q), dtype=float)
+        a0 = int(preferred_action)
+        if 0 <= a0 < self.num_actions:
+            self.Q[key][a0] = float(preferred_q)
     
     # epsilon-greedy action selection
     def select_action(self, state_key: StateKey) -> int:
