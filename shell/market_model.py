@@ -99,3 +99,16 @@ class MarketModel:
         reward = self.compute_reward(clearing_price, cleared_quantity)
 
         return clearing_price, cleared_quantity, reward
+
+    def peek_reward_from_action(
+        self,
+        action_index: int,
+        forecast_price: float,
+    ) -> float:
+        """Preserves RNG state for warm starting Q-values"""
+        rng_state = random.getstate()
+        try:
+            _cp, _cq, reward = self.clear_market_from_action(action_index, forecast_price)
+            return float(reward)
+        finally:
+            random.setstate(rng_state)
