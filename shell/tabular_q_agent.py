@@ -71,7 +71,7 @@ class TabularQLearningAgent:
         exp_q = np.exp(scaled)
         return exp_q / np.sum(exp_q)
     
-    def select_softmax_action(self, state_key: StateKey, temperature: float = 1.0) -> int:
+    def select_softmax_action(self, state_key: StateKey, temperature: float | None = None) -> int:
         probs = self.get_softmax_action_probs(state_key, temperature)
         return int(self._rng.choice(self.num_actions, p=probs))
 

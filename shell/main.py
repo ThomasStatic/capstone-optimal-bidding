@@ -2,7 +2,10 @@ import argparse
 import pandas as pd
 import numpy as np
 import pickle
-
+import matplotlib.pyplot as plt
+from pathlib import Path
+from datetime import datetime
+import csv
 from shell.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -159,6 +162,13 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
+    
+    episode_profits = np.ndarray([])
+    episode_variances = np.ndarray([])
+    episode_variance_per_profits =  np.ndarray([])
+    episode_metrics = []
+    train_episodes = 52
+
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
@@ -170,7 +180,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
     for ep_idx, start_idx in enumerate(episode_starts):
         print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
-        cumulative_reward = 0
+        cumulative_reward = np.ndarray([])
 
         state.episode_start = start_idx
         episode_start_ts = state.raw_state_data.index[start_idx]
@@ -195,7 +205,10 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         step_counter = 0
 
         while not done:
-            action_idx_raw = agent.select_softmax_action(state_key)
+            if ep_idx < train_episodes:
+                action_idx_raw = agent.select_softmax_action(state_key, temperature=1.0)
+            else:
+                action_idx_raw = agent.select_softmax_action(state_key)
 
             action_idx, clip_info = action_space.project_to_feasible(
                 action_idx_raw,
@@ -238,9 +251,9 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
             # --- LOGGING ---
             if step_counter == 0:
-                cumulative_reward = 0  # initialize at episode start
+                cumulative_reward = np.ndarray([])  # initialize at episode start
 
-            cumulative_reward += reward
+            cumulative_reward = np.append(cumulative_reward, reward)
 
             print(
                 f"[EP {ep_idx+1} | Step {step_counter}] "
@@ -249,18 +262,20 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
                 f"action={action_idx} | "
                 f"price={price_val:.2f} | "
                 f"reward={reward:.4f} | "
-                f"cumulative_reward={cumulative_reward:.4f}"
+                f"cumulative_reward={np.sum(cumulative_reward):.4f}"
             )
 
             next_state_key = agent.state_to_key(next_obs)
 
-            agent.update_q_table(
-                state_key,
-                action_idx,
-                reward,
-                next_state_key,
-                done
-            )
+            ## Freeze learning past the burn-in period
+            if ep_idx < train_episodes:
+                agent.update_q_table(
+                    state_key,
+                    action_idx,
+                    reward,
+                    next_state_key,
+                    done
+                )
 
             state_key = next_state_key
             obs = next_obs
@@ -270,7 +285,96 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
                 done = True
 
         print(f"Episode {ep_idx+1} finished after {step_counter} steps")
-         
+    
+        if (args.verbose):
+            ## For plotting of profit
+            episode_profit = cumulative_reward.sum()
+            episode_variance = cumulative_reward.var(ddof=1)
+            episode_variance_per_profit = episode_variance / (abs(episode_profit) + 1e-8)
+            episode_profits = np.append(episode_profits, episode_profit)
+            episode_variances = np.append(episode_variances, episode_variance)
+            episode_variance_per_profits = np.append(episode_variance_per_profits, episode_variance_per_profit)
+            episode_metrics.append({
+                "episode": ep_idx + 1,
+                "profit": episode_profit,
+                "profit_variance": episode_variance,
+                "risk_adjusted_variance": episode_variance_per_profit,
+                "steps": step_counter,
+            }) 
+    
+    if args.verbose:
+        ## Note that denote the plot pre and post burn in
+        episodes = np.arange(1, len(episode_profits) + 1)
+        # Create output directory
+        out_dir = Path("Analysis/Metrics/plots")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        todaysdate = datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+
+        ## Profit
+        plt.plot(episodes, episode_profits, label="Episode Profit")
+        plt.axvspan(
+            1,
+            train_episodes,
+            alpha=0.15,
+            label="Burn-in Period"
+        )
+        plt.title("Episode Profits (Pre/Post Training)")
+        plt.xlabel("Episode")
+        plt.ylabel("Profit")
+        plt.legend()
+        plt.tight_layout()
+
+        # Save figure
+        save_path = out_dir / f"episode_profits_{todaysdate}_{train_episodes}_epi.png"
+        plt.savefig(save_path)
+        plt.close()
+
+        plt.plot(episodes, episode_variances, label="Profit Variance")
+        plt.axvspan(
+            1,
+            train_episodes,
+            alpha=0.15,
+            label="Burn-in Period"
+        )
+        plt.title("Intra-episode Profit Variance")
+        plt.xlabel("Episode")
+        plt.ylabel("Variance")
+        plt.legend()
+        plt.tight_layout()
+
+        # Save figure
+        save_path = out_dir / f"episode_variances_{todaysdate}_{train_episodes}_epi.png"
+        plt.savefig(save_path)
+        plt.close()
+
+        plt.plot(episodes, episode_variance_per_profits, label="Variance / |Profit|")
+        plt.axvspan(
+            1,
+            train_episodes,
+            alpha=0.15,
+            label="Burn-in Period"
+        )
+        plt.title("Risk-Adjusted Variance per Episode")
+        plt.xlabel("Episode")
+        plt.ylabel("Variance / |Profit|")
+        plt.legend()
+        plt.tight_layout()
+
+        # Save figure
+        save_path = out_dir / f"profit_adjusted_episode_variances_{todaysdate}_{train_episodes}_epi.png"
+        plt.savefig(save_path)
+        plt.close()
+
+        out_path = out_dir / f"episode_metrics_{todaysdate}_{train_episodes}_epi.csv"
+
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=episode_metrics[0].keys()
+            )
+            writer.writeheader()
+            writer.writerows(episode_metrics)
+
     with open("q_table.pkl", "wb") as f:
         pickle.dump(agent.Q, f)
 
