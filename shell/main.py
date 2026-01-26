@@ -372,6 +372,13 @@ def parse_args():
     p.add_argument("--risk_penalty_lambda", type=float, default=0.0, help="Penalty lambda for risk constraint violations")
     p.add_argument("--max_drawdown", type=float, default=float("inf"), help="Maximum allowable drawdown over an episode. inf disables.")
 
+    p.add_argument(
+        "--warm_start_q",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
+    )
+
     return p.parse_args()
 
 if __name__ == "__main__":
