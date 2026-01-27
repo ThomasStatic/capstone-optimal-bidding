@@ -218,7 +218,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         Q_start = {s: q.copy() for s, q in agent.Q.items()} # Take copy of initial Q table
         while not done:
             if ep_idx < train_episodes:
-                action_idx_raw = agent.select_softmax_action(state_key, temperature=1.0)
+                action_idx_raw = agent.select_softmax_action(state_key)
             else:
                 action_idx_raw = agent.select_softmax_action(state_key)
 
@@ -469,9 +469,9 @@ def parse_args():
     
     p.add_argument("--mode", choices=["train", "baseline"], default="train")
 
-    p.add_argument("--n_episodes", type=int, default=20)
+    p.add_argument("--n_episodes", type=int, default=100)
 
-    p.add_argument("--train_episodes", type=int, default=20)
+    p.add_argument("--train_episodes", type=int, default=100)
 
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 

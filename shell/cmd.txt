@@ -1,3 +1,7 @@
 python -m shell.main --mode train --n_episodes 100 --train_episodes 100 --verbose
 
-python -m shell.main --mode train --n_episodes 126 --train_episodes 26
+## With Warm start q
+python -m shell.main --mode train --n_episodes 100 --train_episodes 100 --warm_start_q --verbose
+
+## With Warm start q
+python -m shell.main --mode train --n_episodes 500 --train_episodes 500 --warm_start_q --verbose
