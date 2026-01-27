@@ -75,9 +75,9 @@ pip install -r requirements.txt
 ---
 
 ## 🚀 Usage
-### Train a Q-Learning Agent (Currently Unavailable)
+### Train a Q-Learning Agent
 ```python
-python src/train_agent.py --episodes 5000 --alpha 0.05 --epsilon 0.1
+python -m shell.main --mode train --n_episodes 400 --verbose --max_notional_q 0.95 --risk_penalty_lambda 0.2 --max_drawdown 50
 ```
 
 ### Visualize Training Performance (Currently Unavailable)
