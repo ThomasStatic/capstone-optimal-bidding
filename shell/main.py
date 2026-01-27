@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import pickle
 
-from shell.market_loads_api import ISODemandController
+from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
 from shell.linear_approximator import (
