@@ -473,14 +473,16 @@ def parse_args():
                 help="Path to saved deterministic policy mapping.")
     p.add_argument("--eval_q_table_path", type=str, default="q_table.pkl",
                 help="Optional: Q-table fallback if policy missing a state.")
+    
+    p.add_argument("--run_master_ablations", action="store_true",
+               help="Run warm-start + risk + temperature ablations AND the demand perturbation sweep.")
 
 
     return p.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
-
-    if args.run_all_ablations:
+    if args.run_all_ablations or args.run_master_ablations:
         cfg = AllAblationsConfig(
             seeds=args.ablation_seeds,
             episodes=args.ablation_episodes,
@@ -488,14 +490,12 @@ if __name__ == "__main__":
         )
         run_all_ablations(train_fn=train, args=args, cfg=cfg)
 
-    elif args.plot_demand_perturbation:
+    if args.plot_demand_perturbation or args.run_master_ablations:
         scales = [float(x.strip()) for x in args.demand_scales.split(",")]
         cfg = DemandPerturbationConfig(
             scales=scales,
             seeds=args.ablation_seeds,
             episodes=args.ablation_episodes,
-            out_csv=args.ablation_out_csv,
-            out_png=args.ablation_out_png
         )
         run_demand_perturbation_sweep(
             build_world_and_data_fn=build_world_and_data,
@@ -505,9 +505,11 @@ if __name__ == "__main__":
             policy_path=args.eval_policy_path,
             q_table_path=args.eval_q_table_path
         )
-    elif args.mode == "train":
+    
+    if args.mode == "train":
         train(n_episodes=args.n_episodes)
-    elif args.mode == "baseline":
+    
+    if args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,
             n_episodes=args.n_episodes,
