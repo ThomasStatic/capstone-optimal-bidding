@@ -29,6 +29,26 @@ END_DATE = "2023-01-31"
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
+def get_episode_temperature(ep_idx: int) -> float | None:
+    """
+    Returns:
+      - float for fixed/exp_decay
+      - None for qgap (agent computes adaptive temperature internally)
+    """
+    if args.temperature_mode == "fixed":
+        return float(args.temperature)
+
+    if args.temperature_mode == "qgap":
+        return None
+
+    if args.temperature_mode == "exp_decay":
+        T0 = float(args.temperature)
+        decay = float(args.temperature_decay)
+        Tmin = float(args.temperature_min)
+        return max(Tmin, T0 * (decay ** ep_idx))
+
+    raise ValueError(f"Unknown temperature_mode: {args.temperature_mode}")
+
 def build_state_and_discretizers(
     load_df: pd.DataFrame, price_df: pd.DataFrame
 ) -> tuple[State, dict]:
@@ -218,7 +238,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
-            action_idx_raw = agent.select_softmax_action(state_key)
+            temp = get_episode_temperature(ep_idx)
+            action_idx_raw = agent.select_softmax_action(state_key, temperature=temp)
 
             action_idx, clip_info = action_space.project_to_feasible(
                 action_idx_raw,
@@ -388,7 +409,12 @@ def parse_args():
         help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
     )
     
-    # --- Ablation: warm start ---
+    p.add_argument(
+        "--run_all_ablations",
+        action="store_true",
+        help="Run all ablation studies (warm start, risk constraint, temperature) and save CSV/plots."
+    )
+
     p.add_argument("--plot_warm_start_ablation", action="store_true",
                 help="Run warm-start on/off across seeds and save plots.")
     p.add_argument("--ablation_seeds", type=int, default=5)
@@ -396,6 +422,8 @@ def parse_args():
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
     p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
 
+    p.add_argument("--plot_temperature_ablation", action="store_true",
+               help="Run temperature mode ablation and save CSV/plot.")
     p.add_argument("--temperature_mode", choices=["fixed", "qgap", "exp_decay"], default="fixed")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--temperature_min", type=float, default=0.1)
