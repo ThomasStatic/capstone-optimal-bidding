@@ -149,10 +149,12 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     return state, action_space, market_model
 
 
-def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
+def train(n_epsiodes = 20, *, seed: int | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
     load_df, lmp_df = load_data()
-
     state, action_space, market_model = build_world(load_df, lmp_df)
+
+    if seed is not None:
+        np.random.seed(seed)
 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
@@ -163,6 +165,9 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
+    if seed is not None and hasattr(agent, "seed"):
+        agent.seed(seed)
+
     marginal_cost = float(market_model.params.marginal_cost)
     cost_plus_policy = CostPlusMarkupPolicy(
         action_space=action_space,
@@ -171,6 +176,8 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         quantity_mw=MAX_BID_QUANTITY_MW,
     )
     baseline_action_idx = int(cost_plus_policy.act(None))
+
+    episode_logs: list[dict] = []
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
@@ -289,6 +296,13 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
             if step_counter >= state.window_size:
                 done = True
+            
+            episode_logs.append({
+                "seed": seed if seed is not None else -1,
+                "warm_start_q": bool(args.warm_start_q),
+                "episode": ep_idx,
+                "cumulative_reward": float(cumulative_reward),
+            })
 
         print(f"Episode {ep_idx+1} finished after {step_counter} steps")
          
@@ -299,7 +313,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         pickle.dump(agent.extract_softmax_policy(), f)
     
     print("Training complete. Q-table and policy saved.")
-    return agent, state, action_space, market_model
+    return agent, state, action_space, market_model, episode_logs
 
 def run_baselines(
         *, # Keyward-only arguments since complex signature

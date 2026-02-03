@@ -152,3 +152,6 @@ class TabularQLearningAgent:
         denom = np.log(p_star / (1.0 - p_star))
         T = gap / denom
         return float(np.clip(T, t_min, t_max))
+    
+    def seed(self, seed: int) -> None:
+        self._rng = np.random.default_rng(seed)
