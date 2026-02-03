@@ -25,7 +25,7 @@ def run_risk_constraint_ablation(*, train_fn: Callable, args: Any, cfg: RiskAbla
     for cond in conditions:
         for s in range(cfg.seeds):
             overrides = {"risk_penalty_lambda": cond["risk_penalty_lambda"]}
-            _, _, _, _, logs = train_fn(n_epsiodes=cfg.episodes, seed=s, overrides=overrides)
+            _, _, _, _, logs = train_fn(n_episodes=cfg.episodes, seed=s, overrides=overrides)
 
             # ensure logs contain these columns (you already log warm_start_q etc; add these two lines when creating rows)
             for r in logs:

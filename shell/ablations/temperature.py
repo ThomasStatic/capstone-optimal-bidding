@@ -23,7 +23,7 @@ def run_temperature_ablation(*, train_fn: Callable, args: Any, cfg: TemperatureA
 
     for cond in conditions:
         for s in range(cfg.seeds):
-            _, _, _, _, logs = train_fn(n_epsiodes=cfg.episodes, seed=s, overrides=cond["overrides"])
+            _, _, _, _, logs = train_fn(n_episodes=cfg.episodes, seed=s, overrides=cond["overrides"])
             for r in logs:
                 r["seed"] = s
                 r["condition"] = cond["label"]

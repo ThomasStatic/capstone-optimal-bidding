@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import pickle
 
+from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
@@ -414,20 +415,15 @@ def parse_args():
         action="store_true",
         help="Run all ablation studies (warm start, risk constraint, temperature) and save CSV/plots."
     )
-
-    p.add_argument("--plot_warm_start_ablation", action="store_true",
-                help="Run warm-start on/off across seeds and save plots.")
     p.add_argument("--ablation_seeds", type=int, default=5)
     p.add_argument("--ablation_episodes", type=int, default=50)
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
     p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
-
-    p.add_argument("--plot_temperature_ablation", action="store_true",
-               help="Run temperature mode ablation and save CSV/plot.")
     p.add_argument("--temperature_mode", choices=["fixed", "qgap", "exp_decay"], default="fixed")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--temperature_min", type=float, default=0.1)
     p.add_argument("--temperature_decay", type=float, default=0.995)
+    p.add_argument("--risk_lambda_on", type=float, default=1.0)
 
 
     return p.parse_args()
@@ -435,14 +431,13 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.plot_warm_start_ablation:
-        cfg = WarmStartAblationConfig(
+    if args.run_all_ablations:
+        cfg = AllAblationsConfig(
             seeds=args.ablation_seeds,
             episodes=args.ablation_episodes,
-            out_csv=args.ablation_out_csv,
-            out_png=args.ablation_out_png,
+            risk_lambda_on=args.risk_penalty_lambda
         )
-        run_warm_start_ablation(train_fn=train, args=args, cfg=cfg)
+        run_all_ablations(train_fn=train, args=args, cfg=cfg)
     elif args.mode == "train":
         train(n_episodes=args.n_episodes)
     elif args.mode == "baseline":
