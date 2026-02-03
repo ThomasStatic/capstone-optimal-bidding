@@ -150,7 +150,12 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     return state, action_space, market_model
 
 
-def train(n_episodes = 20, *, seed: int | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
+def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
+    # For ablation (temporary change for single run)
+    if overrides is not None:
+        for k, v in overrides.items():
+            setattr(args, k, v)
+
     load_df, lmp_df = load_data()
     state, action_space, market_model = build_world(load_df, lmp_df)
 
