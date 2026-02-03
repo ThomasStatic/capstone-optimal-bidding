@@ -425,6 +425,26 @@ def parse_args():
     p.add_argument("--temperature_decay", type=float, default=0.995)
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
 
+    p.add_argument(
+    "--demand_scale",
+    type=float,
+    default=1.0,
+    help="Multiply HIST_LOAD_COL and FORECAST_LOAD_COL by this factor before discretization."
+)
+
+    p.add_argument(
+        "--plot_demand_perturbation",
+        action="store_true",
+        help="Evaluate a saved policy under demand scales and save performance-vs-scale plot."
+    )
+
+    p.add_argument("--demand_scales", type=str, default="0.9,1.0,1.1",
+                help="Comma-separated demand scales for perturbation sweep.")
+    p.add_argument("--eval_policy_path", type=str, default="policy.pkl",
+                help="Path to saved deterministic policy mapping.")
+    p.add_argument("--eval_q_table_path", type=str, default="q_table.pkl",
+                help="Optional: Q-table fallback if policy missing a state.")
+
 
     return p.parse_args()
 
