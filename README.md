@@ -75,14 +75,116 @@ pip install -r requirements.txt
 ---
 
 ## 🚀 Usage
+
 ### Train a Q-Learning Agent
 ```python
 python -m shell.main --mode train --n_episodes 400 --verbose --max_notional_q 0.95 --risk_penalty_lambda 0.2 --max_drawdown 50
 ```
 
-### Visualize Training Performance (Currently Unavailable)
+---
+
+## 📊 Run Baseline Strategies
+Evaluate heuristic bidding policies to benchmark agent performance.
+
 ```python
-python src/analysis/plot_rewards.py
+python -m shell.main --mode baseline --baseline cost_plus --n_episodes 100
+```
+
+Available baselines include:
+
+- `cost_plus` — bids at marginal cost plus a configurable markup  
+- `quantile` — bids based on historical price quantiles  
+
+Example with custom parameters:
+
+```python
+python -m shell.main --mode baseline --baseline quantile --quantile 0.9 --n_episodes 100
+```
+
+---
+
+## 🧪 Run Ablation Studies
+Execute the warm-start, risk constraint, and temperature schedule ablations used to validate agent design decisions.
+
+```python
+python -m shell.main --run_all_ablations --ablation_seeds 5 --ablation_episodes 50
+```
+
+Outputs include:
+
+- Learning curve plots  
+- Final reward distributions  
+- CSV summaries for statistical analysis  
+
+---
+
+## 📉 Demand Curve Perturbation Sweep
+Evaluate policy robustness under shifted demand conditions **without retraining**.
+
+```python
+python -m shell.main --plot_demand_perturbation --demand_scales 0.9,1.0,1.1 --ablation_seeds 5 --ablation_episodes 50 --eval_policy_path policy.pkl --eval_q_table_path q_table.pkl
+```
+
+This experiment measures how sensitive the learned bidding policy is to systematic load changes.
+
+---
+
+## 🔥 Master Ablation Run (Recommended)
+Runs **all ablation studies AND the demand perturbation sweep** in a single command.
+
+```python
+python -m shell.main --run_master_ablations --ablation_seeds 5 --ablation_episodes 50 --demand_scales 0.9,1.0,1.1 --eval_policy_path policy.pkl --eval_q_table_path q_table.pkl
+```
+
+Recommended for generating the full experimental package used in reports or papers.
+
+---
+
+## ⚙️ Other Useful Commands
+
+### Train with Custom Exploration
+```python
+python -m shell.main --mode train --temperature_mode exp_decay --temperature 1.0 --temperature_decay 0.995 --temperature_min 0.1
+```
+
+---
+
+### Disable Warm Start
+```python
+python -m shell.main --mode train --warm_start_q false
+```
+
+---
+
+### Increase Risk Sensitivity
+```python
+python -m shell.main --mode train --risk_penalty_lambda 0.5 --max_notional_q 0.9
+```
+
+---
+
+### Run a Small Debug Experiment
+Helpful for verifying pipeline changes quickly.
+
+```python
+python -m shell.main --mode train --n_episodes 5 --verbose
+```
+
+---
+
+## 💡 Typical Workflow
+
+For most experiments:
+
+1. Train the agent  
+2. Run ablations  
+3. Run the demand perturbation sweep  
+
+Example:
+
+```python
+python -m shell.main --mode train --n_episodes 400
+python -m shell.main --run_master_ablations
 ```
 
 ## 🧑‍💻 Team Members
