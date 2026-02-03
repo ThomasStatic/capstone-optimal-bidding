@@ -30,6 +30,21 @@ END_DATE = "2023-01-31"
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
+def apply_demand_scale_to_state(state: State, scale: float) -> None:
+    if scale == 1.0:
+        return
+    if not isinstance(state.raw_state_data, pd.DataFrame):
+        raise ValueError("State raw_state_data not initialized")
+
+    df = state.raw_state_data
+
+    if HIST_LOAD_COL in df.columns:
+        df[HIST_LOAD_COL] = df[HIST_LOAD_COL].astype(float) * scale
+
+    if FORECAST_LOAD_COL in df.columns:
+        df[FORECAST_LOAD_COL] = df[FORECAST_LOAD_COL].astype(float) * scale
+
+
 def get_episode_temperature(ep_idx: int) -> float | None:
     """
     Returns:
@@ -96,6 +111,9 @@ def inject_epsisode_forecast(state: State, forecast_df: pd.DataFrame) -> None:
 
     forecast_df = forecast_df.copy()
     forecast_df["datetime"] = pd.to_datetime(forecast_df["datetime"], utc=True)
+
+    if float(args.demand_scale) != 1.0 and FORECAST_LOAD_COL in forecast_df.columns:
+        forecast_df[FORECAST_LOAD_COL] = forecast_df[FORECAST_LOAD_COL].astype(float) * float(args.demand_scale)
 
     f = forecast_df.set_index("datetime")[FORECAST_LOAD_COL]
     df.loc[f.index, FORECAST_LOAD_COL] = f.values
@@ -179,6 +197,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
     load_df, lmp_df = load_data()
     state, action_space, market_model = build_world(load_df, lmp_df)
+    apply_demand_scale_to_state(state, float(args.demand_scale))
+    state.apply()
 
     if seed is not None:
         np.random.seed(seed)
