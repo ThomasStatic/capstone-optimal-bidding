@@ -367,6 +367,16 @@ def parse_args():
         default=True,
         help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
     )
+    
+    p.add_argument(
+        "--plot_warm_start_ablation",
+        action="store_true",
+        help="Run warm-start on/off across seeds and save reward learning curves + summary plots."
+    )
+    p.add_argument("--ablation_seeds", type=int, default=5, help="Number of seeds for ablation runs.")
+    p.add_argument("--ablation_episodes", type=int, default=50, help="Episodes per run in ablation.")
+    p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
+    p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
 
     return p.parse_args()
 
