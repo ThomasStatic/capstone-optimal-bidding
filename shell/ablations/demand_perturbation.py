@@ -6,6 +6,9 @@ from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 
+from shell.linear_approximator import PRICE_COL
+from shell.load_sarimax_projections import SARIMAXLoadProjections
+
 
 @dataclass
 class DemandPerturbationConfig:
@@ -14,6 +17,22 @@ class DemandPerturbationConfig:
     episodes: int
     out_csv: str = "demand_perturbation.csv"
     out_png: str = "demand_perturbation.png"
+
+def _require_price_series(lmp_df: pd.DataFrame) -> pd.Series:
+    # Prefer canonical name
+    if "PRICE_COL" in globals() and PRICE_COL in lmp_df.columns:
+        return lmp_df[PRICE_COL]
+
+    # Common fallbacks (just in case)
+    for c in ["lmp", "LMP", "price", "Price", "settlement_price"]:
+        if c in lmp_df.columns:
+            return lmp_df[c]
+
+    raise ValueError(
+        "Could not find a price column in lmp_df. "
+        f"Looked for PRICE_COL={globals().get('PRICE_COL', None)} and common fallbacks. "
+        f"Available columns: {list(lmp_df.columns)}"
+    )
 
 
 def _state_to_key(obs) -> tuple[int, ...]:
@@ -57,15 +76,30 @@ def evaluate_saved_policy(
     # episode start indices (same style as your train loop)
     episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
     episode_starts = episode_starts[:n_episodes]
+    print(f"[eval] Running {len(episode_starts)} episodes...")
 
-    price_q = float(lmp_df["lmp"].abs().quantile(args.max_notional_q))
+    price_series = _require_price_series(lmp_df).astype(float)
+    price_q = float(price_series.abs().quantile(args.max_notional_q))
     max_notional = float(50 * price_q)  # MAX_BID_QUANTITY_MW in your file is 50
 
     ep_rewards = []
 
-    for start_idx in episode_starts:
+    for ep_num, start_idx in enumerate(episode_starts, start=1):
+        print(f"  -> Episode {ep_num}/{len(episode_starts)}")
         # inject forecast for this episode (your existing flow)
-        forecast_df = ...  # whatever you already compute in train() for forecast
+        
+        # --- Build history for SARIMAX only using data prior to episode start (same as train()) ---
+        episode_start_ts = state.raw_state_data.index[start_idx]
+
+        history_mask = load_df["period"] < episode_start_ts
+        history_for_model = load_df.loc[history_mask].copy()
+        if history_for_model.empty:
+            # Minimum history requirement for start
+            history_for_model = load_df.iloc[:state.window_size].copy()
+
+        sarimax = SARIMAXLoadProjections(history_for_model)
+        forecast_df = sarimax.get_forecast_df()
+
         inject_forecast_fn(state, forecast_df)
 
         state.apply()
@@ -103,9 +137,9 @@ def evaluate_saved_policy(
                 break
 
             delivery_row = state.raw_state_data.loc[delivery_time]
-            price_val = float(delivery_row.get("lmp", np.nan))
+            price_val = float(delivery_row.get(price_series.name, np.nan))
             if not np.isfinite(price_val):
-                price_val = float(lmp_df["lmp"].iloc[-1])
+                price_val = float(lmp_df[price_series.name].iloc[-1])
 
             _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
 
@@ -132,9 +166,20 @@ def run_demand_perturbation_sweep(
     q_table_path: str | None,
 ) -> None:
     rows = []
-
+    total_runs = len(cfg.scales) * cfg.seeds
+    run_counter = 0
     for scale in cfg.scales:
         for s in range(cfg.seeds):
+            run_counter += 1
+            print(
+                f"\n========== Demand Sweep Progress ==========\n"
+                f"Run {run_counter}/{total_runs}\n"
+                f"Scale: {scale}\n"
+                f"Seed: {s}\n"
+                f"Episodes: {cfg.episodes}\n"
+                f"=========================================\n"
+            )
+
             # set scale for this eval run
             args.demand_scale = float(scale)
 

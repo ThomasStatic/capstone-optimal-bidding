@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import pickle
 
+from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_demand_perturbation_sweep
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
@@ -188,6 +189,14 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     market_model = MarketModel(action_space, market_params)
     return state, action_space, market_model
 
+def build_world_and_data():
+    load_df, lmp_df = load_data()
+    state, action_space, market_model = build_world(load_df, lmp_df)
+    
+    apply_demand_scale_to_state(state, float(args.demand_scale))
+    state.apply()
+
+    return state, action_space, market_model, load_df, lmp_df
 
 def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
     # For ablation (temporary change for single run)
@@ -478,6 +487,24 @@ if __name__ == "__main__":
             risk_lambda_on=args.risk_penalty_lambda
         )
         run_all_ablations(train_fn=train, args=args, cfg=cfg)
+
+    elif args.plot_demand_perturbation:
+        scales = [float(x.strip()) for x in args.demand_scales.split(",")]
+        cfg = DemandPerturbationConfig(
+            scales=scales,
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            out_csv=args.ablation_out_csv,
+            out_png=args.ablation_out_png
+        )
+        run_demand_perturbation_sweep(
+            build_world_and_data_fn=build_world_and_data,
+            inject_forecast_fn=inject_epsisode_forecast,
+            args=args,
+            cfg=cfg,
+            policy_path=args.eval_policy_path,
+            q_table_path=args.eval_q_table_path
+        )
     elif args.mode == "train":
         train(n_episodes=args.n_episodes)
     elif args.mode == "baseline":
