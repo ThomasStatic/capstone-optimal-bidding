@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import pickle
 
+from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -149,7 +150,7 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     return state, action_space, market_model
 
 
-def train(n_epsiodes = 20, *, seed: int | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
+def train(n_episodes = 20, *, seed: int | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
     load_df, lmp_df = load_data()
     state, action_space, market_model = build_world(load_df, lmp_df)
 
@@ -183,7 +184,7 @@ def train(n_epsiodes = 20, *, seed: int | None = None) -> tuple[TabularQLearning
         raise ValueError("State raw_state_data has not been intialized")
     
     episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
-    episode_starts = episode_starts[:n_epsiodes] # Limit to n_episodes
+    episode_starts = episode_starts[:n_episodes] # Limit to n_episodes
 
     for ep_idx, start_idx in enumerate(episode_starts):
         print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
@@ -382,23 +383,30 @@ def parse_args():
         help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
     )
     
-    p.add_argument(
-        "--plot_warm_start_ablation",
-        action="store_true",
-        help="Run warm-start on/off across seeds and save reward learning curves + summary plots."
-    )
-    p.add_argument("--ablation_seeds", type=int, default=5, help="Number of seeds for ablation runs.")
-    p.add_argument("--ablation_episodes", type=int, default=50, help="Episodes per run in ablation.")
+    # --- Ablation: warm start ---
+    p.add_argument("--plot_warm_start_ablation", action="store_true",
+                help="Run warm-start on/off across seeds and save plots.")
+    p.add_argument("--ablation_seeds", type=int, default=5)
+    p.add_argument("--ablation_episodes", type=int, default=50)
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
     p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
+
 
     return p.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.mode == "train":
-        train(n_epsiodes=args.n_episodes)
+    if args.plot_warm_start_ablation:
+        cfg = WarmStartAblationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            out_csv=args.ablation_out_csv,
+            out_png=args.ablation_out_png,
+        )
+        run_warm_start_ablation(train_fn=train, args=args, cfg=cfg)
+    elif args.mode == "train":
+        train(n_episodes=args.n_episodes)
     elif args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,
