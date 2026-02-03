@@ -104,9 +104,15 @@ class TabularQLearningAgent:
         exp_q = np.exp(scaled)
         return exp_q / np.sum(exp_q)
     
-    def select_softmax_action(self, state_key: StateKey, temperature: float = 1.0) -> int:
-        probs = self.get_softmax_action_probs(state_key, temperature)
-        return int(self._rng.choice(self.num_actions, p=probs))
+    def select_softmax_action(self, state_key, temperature=None):
+        """
+        Select an action via softmax.
+        - If temperature is None, we use the agent's q-gap adaptive temperature.
+        - If temperature is a float, we use that fixed temperature.
+        """
+        action_probs = self.get_softmax_action_probs(state_key, temperature=temperature)
+        action = self._rng.choice(self.num_actions, p=action_probs)
+        return int(action)
 
         
     def update_q_table(self, state_key: StateKey, action: int, reward: float, next_state_key: StateKey, done: bool) -> None:
@@ -152,3 +158,6 @@ class TabularQLearningAgent:
         denom = np.log(p_star / (1.0 - p_star))
         T = gap / denom
         return float(np.clip(T, t_min, t_max))
+    
+    def seed(self, seed: int) -> None:
+        self._rng = np.random.default_rng(seed)

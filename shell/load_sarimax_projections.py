@@ -92,7 +92,7 @@ class SARIMAXLoadProjections:
         print("Fitting SARIMAX model... this may take a while.")
         fitted_model: Any = model.fit(disp=False) # typed as Any to avoid interpretter issues (statsmodels types are not always well defined)
         print("SARIMAX model fitted.")
-        print(fitted_model.summary())
+        #print(fitted_model.summary())
 
         # Forecast the next 24 * 7 hours
         steps = 24 * 7

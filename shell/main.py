@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import pickle
 
+from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_demand_perturbation_sweep
+from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
+from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -27,6 +30,41 @@ END_DATE = "2023-01-31"
 
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
+
+def apply_demand_scale_to_state(state: State, scale: float) -> None:
+    if scale == 1.0:
+        return
+    if not isinstance(state.raw_state_data, pd.DataFrame):
+        raise ValueError("State raw_state_data not initialized")
+
+    df = state.raw_state_data
+
+    if HIST_LOAD_COL in df.columns:
+        df[HIST_LOAD_COL] = df[HIST_LOAD_COL].astype(float) * scale
+
+    if FORECAST_LOAD_COL in df.columns:
+        df[FORECAST_LOAD_COL] = df[FORECAST_LOAD_COL].astype(float) * scale
+
+
+def get_episode_temperature(ep_idx: int) -> float | None:
+    """
+    Returns:
+      - float for fixed/exp_decay
+      - None for qgap (agent computes adaptive temperature internally)
+    """
+    if args.temperature_mode == "fixed":
+        return float(args.temperature)
+
+    if args.temperature_mode == "qgap":
+        return None
+
+    if args.temperature_mode == "exp_decay":
+        T0 = float(args.temperature)
+        decay = float(args.temperature_decay)
+        Tmin = float(args.temperature_min)
+        return max(Tmin, T0 * (decay ** ep_idx))
+
+    raise ValueError(f"Unknown temperature_mode: {args.temperature_mode}")
 
 def build_state_and_discretizers(
     load_df: pd.DataFrame, price_df: pd.DataFrame
@@ -74,6 +112,9 @@ def inject_epsisode_forecast(state: State, forecast_df: pd.DataFrame) -> None:
 
     forecast_df = forecast_df.copy()
     forecast_df["datetime"] = pd.to_datetime(forecast_df["datetime"], utc=True)
+
+    if float(args.demand_scale) != 1.0 and FORECAST_LOAD_COL in forecast_df.columns:
+        forecast_df[FORECAST_LOAD_COL] = forecast_df[FORECAST_LOAD_COL].astype(float) * float(args.demand_scale)
 
     f = forecast_df.set_index("datetime")[FORECAST_LOAD_COL]
     df.loc[f.index, FORECAST_LOAD_COL] = f.values
@@ -148,11 +189,28 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame) -> tuple[State, Act
     market_model = MarketModel(action_space, market_params)
     return state, action_space, market_model
 
-
-def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel]:
+def build_world_and_data():
     load_df, lmp_df = load_data()
-
     state, action_space, market_model = build_world(load_df, lmp_df)
+    
+    apply_demand_scale_to_state(state, float(args.demand_scale))
+    state.apply()
+
+    return state, action_space, market_model, load_df, lmp_df
+
+def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
+    # For ablation (temporary change for single run)
+    if overrides is not None:
+        for k, v in overrides.items():
+            setattr(args, k, v)
+
+    load_df, lmp_df = load_data()
+    state, action_space, market_model = build_world(load_df, lmp_df)
+    apply_demand_scale_to_state(state, float(args.demand_scale))
+    state.apply()
+
+    if seed is not None:
+        np.random.seed(seed)
 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
@@ -163,6 +221,9 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
     agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
+    if seed is not None and hasattr(agent, "seed"):
+        agent.seed(seed)
+
     marginal_cost = float(market_model.params.marginal_cost)
     cost_plus_policy = CostPlusMarkupPolicy(
         action_space=action_space,
@@ -172,11 +233,13 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
     )
     baseline_action_idx = int(cost_plus_policy.act(None))
 
+    episode_logs: list[dict] = []
+
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
     
     episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
-    episode_starts = episode_starts[:n_epsiodes] # Limit to n_episodes
+    episode_starts = episode_starts[:n_episodes] # Limit to n_episodes
 
     for ep_idx, start_idx in enumerate(episode_starts):
         print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
@@ -205,7 +268,8 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         step_counter = 0
 
         while not done:
-            action_idx_raw = agent.select_softmax_action(state_key)
+            temp = get_episode_temperature(ep_idx)
+            action_idx_raw = agent.select_softmax_action(state_key, temperature=temp)
 
             action_idx, clip_info = action_space.project_to_feasible(
                 action_idx_raw,
@@ -289,6 +353,13 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
 
             if step_counter >= state.window_size:
                 done = True
+            
+            episode_logs.append({
+                "seed": seed if seed is not None else -1,
+                "warm_start_q": bool(args.warm_start_q),
+                "episode": ep_idx,
+                "cumulative_reward": float(cumulative_reward),
+            })
 
         print(f"Episode {ep_idx+1} finished after {step_counter} steps")
          
@@ -299,7 +370,7 @@ def train(n_epsiodes = 20) -> tuple[TabularQLearningAgent, State, ActionSpace, M
         pickle.dump(agent.extract_softmax_policy(), f)
     
     print("Training complete. Q-table and policy saved.")
-    return agent, state, action_space, market_model
+    return agent, state, action_space, market_model, episode_logs
 
 def run_baselines(
         *, # Keyward-only arguments since complex signature
@@ -367,15 +438,78 @@ def parse_args():
         default=True,
         help="Warm start unseen-state Q values using the cost+markup baseline (default: enabled).",
     )
+    
+    p.add_argument(
+        "--run_all_ablations",
+        action="store_true",
+        help="Run all ablation studies (warm start, risk constraint, temperature) and save CSV/plots."
+    )
+    p.add_argument("--ablation_seeds", type=int, default=5)
+    p.add_argument("--ablation_episodes", type=int, default=50)
+    p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
+    p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
+    p.add_argument("--temperature_mode", choices=["fixed", "qgap", "exp_decay"], default="fixed")
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--temperature_min", type=float, default=0.1)
+    p.add_argument("--temperature_decay", type=float, default=0.995)
+    p.add_argument("--risk_lambda_on", type=float, default=1.0)
+
+    p.add_argument(
+    "--demand_scale",
+    type=float,
+    default=1.0,
+    help="Multiply HIST_LOAD_COL and FORECAST_LOAD_COL by this factor before discretization."
+)
+
+    p.add_argument(
+        "--plot_demand_perturbation",
+        action="store_true",
+        help="Evaluate a saved policy under demand scales and save performance-vs-scale plot."
+    )
+
+    p.add_argument("--demand_scales", type=str, default="0.9,1.0,1.1",
+                help="Comma-separated demand scales for perturbation sweep.")
+    p.add_argument("--eval_policy_path", type=str, default="policy.pkl",
+                help="Path to saved deterministic policy mapping.")
+    p.add_argument("--eval_q_table_path", type=str, default="q_table.pkl",
+                help="Optional: Q-table fallback if policy missing a state.")
+    
+    p.add_argument("--run_master_ablations", action="store_true",
+               help="Run warm-start + risk + temperature ablations AND the demand perturbation sweep.")
+
 
     return p.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.run_all_ablations or args.run_master_ablations:
+        cfg = AllAblationsConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            risk_lambda_on=args.risk_penalty_lambda
+        )
+        run_all_ablations(train_fn=train, args=args, cfg=cfg)
 
+    if args.plot_demand_perturbation or args.run_master_ablations:
+        scales = [float(x.strip()) for x in args.demand_scales.split(",")]
+        cfg = DemandPerturbationConfig(
+            scales=scales,
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+        )
+        run_demand_perturbation_sweep(
+            build_world_and_data_fn=build_world_and_data,
+            inject_forecast_fn=inject_epsisode_forecast,
+            args=args,
+            cfg=cfg,
+            policy_path=args.eval_policy_path,
+            q_table_path=args.eval_q_table_path
+        )
+    
     if args.mode == "train":
-        train(n_epsiodes=args.n_episodes)
-    elif args.mode == "baseline":
+        train(n_episodes=args.n_episodes)
+    
+    if args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,
             n_episodes=args.n_episodes,
