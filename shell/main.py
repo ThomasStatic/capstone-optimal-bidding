@@ -396,6 +396,11 @@ def parse_args():
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
     p.add_argument("--ablation_out_png", type=str, default="warm_start_ablation.png")
 
+    p.add_argument("--temperature_mode", choices=["fixed", "qgap", "exp_decay"], default="fixed")
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--temperature_min", type=float, default=0.1)
+    p.add_argument("--temperature_decay", type=float, default=0.995)
+
 
     return p.parse_args()
 
