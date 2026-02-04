@@ -242,7 +242,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     episode_starts = episode_starts[:n_episodes] # Limit to n_episodes
 
     for ep_idx, start_idx in enumerate(episode_starts):
-        print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
+        if args.verbose:
+            print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
         cumulative_reward = 0
 
         state.episode_start = start_idx
@@ -321,21 +322,17 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             next_obs, _, done, info = state.step()
 
-            # --- LOGGING ---
-            if step_counter == 0:
-                cumulative_reward = 0  # initialize at episode start
-
             cumulative_reward += reward
-
-            print(
-                f"[EP {ep_idx+1} | Step {step_counter}] "
-                f"ts={ts} | "
-                f"state_key={state_key} | "
-                f"action={action_idx} | "
-                f"price={price_val:.2f} | "
-                f"reward={reward:.4f} | "
-                f"cumulative_reward={cumulative_reward:.4f}"
-            )
+            if args.verbose:
+                print(
+                    f"[EP {ep_idx+1} | Step {step_counter}] "
+                    f"ts={ts} | "
+                    f"state_key={state_key} | "
+                    f"action={action_idx} | "
+                    f"price={price_val:.2f} | "
+                    f"reward={reward:.4f} | "
+                    f"cumulative_reward={cumulative_reward:.4f}"
+                )
 
             next_state_key = agent.state_to_key(next_obs)
 
@@ -354,14 +351,20 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             if step_counter >= state.window_size:
                 done = True
             
-            episode_logs.append({
-                "seed": seed if seed is not None else -1,
-                "warm_start_q": bool(args.warm_start_q),
-                "episode": ep_idx,
-                "cumulative_reward": float(cumulative_reward),
-            })
-
-        print(f"Episode {ep_idx+1} finished after {step_counter} steps")
+        if args.verbose:
+            print(f"Episode {ep_idx+1} finished after {step_counter} steps")
+        
+        # lightweight progress (works even when verbose is off)
+        if args.progress_every and ((ep_idx + 1) % args.progress_every == 0):
+            seed_str = seed if seed is not None else "NA"
+            print(f"\n=== SEED {seed_str} | EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
+        
+        episode_logs.append({
+            "seed": seed if seed is not None else -1,
+            "warm_start_q": bool(args.warm_start_q),
+            "episode": ep_idx,
+            "cumulative_reward": float(cumulative_reward),
+        })
          
     with open("q_table.pkl", "wb") as f:
         pickle.dump(agent.Q, f)
@@ -476,6 +479,9 @@ def parse_args():
     
     p.add_argument("--run_master_ablations", action="store_true",
                help="Run warm-start + risk + temperature ablations AND the demand perturbation sweep.")
+    
+    p.add_argument("--progress_every", type=int, default=25,
+               help="Print a progress line every N steps (0 disables).")
 
 
     return p.parse_args()
