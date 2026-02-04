@@ -29,13 +29,17 @@ class MarketModel:
     def __init__(self, action_space, params: MarketParams) -> None:
         self.action_space = action_space
         self.params = params
+        self._rng = random.Random()
+
+    def seed(self, seed: int) -> None:
+        self._rng.seed(seed)
 
     def sample_clearing_price(self, forecast_price: float) -> float:
         """
         clearing_price = forecast_price + Gaussian noise,
         then clipped into [min_price, max_price].
         """
-        noise = random.gauss(0.0, self.params.price_noise_std)
+        noise = self._rng.gauss(0.0, self.params.price_noise_std)
         price = forecast_price + noise
         price = max(self.params.min_price, min(self.params.max_price, price))
         return price
@@ -54,7 +58,7 @@ class MarketModel:
 
         # treat very small differences as equality (due to float noise)
         if abs(diff) < eps:
-            return random.random()
+            return self._rng.random()
 
         if bid_price < clearing_price:
             return 1.0  # cheaper than market -> fully dispatched
@@ -106,9 +110,9 @@ class MarketModel:
         forecast_price: float,
     ) -> float:
         """Preserves RNG state for warm starting Q-values"""
-        rng_state = random.getstate()
+        rng_state = self._rng.getstate()
         try:
             _cp, _cq, reward = self.clear_market_from_action(action_index, forecast_price)
             return float(reward)
         finally:
-            random.setstate(rng_state)
+            self._rng.setstate(rng_state)
