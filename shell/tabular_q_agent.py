@@ -1,12 +1,12 @@
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Optional, Sequence, Union
+from typing import Dict, Hashable, Tuple, Optional, Sequence, TypeAlias, Union
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 
 # Our State object currently produces Pandas row of discrete values, so needs to be converted to a hashable type
-StateKey = Tuple[int, ...]
+StateKey: TypeAlias = tuple[int, ...]  
 StateVec = ArrayLike  # e.g., np.ndarray or pd.Series
 
 @dataclass
