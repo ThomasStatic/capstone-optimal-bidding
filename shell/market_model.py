@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Tuple
+import math
+from typing import Any, Dict, List, Sequence, Tuple
 import random
 
 
@@ -112,3 +113,101 @@ class MarketModel:
             return float(reward)
         finally:
             random.setstate(rng_state)
+    
+    def residual_share(
+        self,
+        P: float,
+        *,
+        rho_min: float,
+        rho_max: float,
+        k: float,
+        p0: float,
+    ) -> float:
+        """
+        rho(P) := rho_min + (rho_max - rho_min) / (1 + exp(k(P - p0)))
+        """
+        rho_lo = float(min(rho_min, rho_max))
+        rho_hi = float(max(rho_min, rho_max))
+        x = float(k) * (float(P) - float(p0))
+
+        # Numerically stable logistic:
+        # 1 / (1 + exp(x)) can overflow when x is large, so branch.
+        if x >= 0:
+            denom = 1.0 + math.exp(-x)
+            sig = 1.0 / denom
+        else:
+            ex = math.exp(x)
+            sig = ex / (1.0 + ex)
+
+        # sig here is 1/(1+exp(-x)); we want 1/(1+exp(x)) which is (1 - sig)
+        inv = 1.0 - sig  # = 1/(1+exp(x))
+
+        rho = rho_lo + (rho_hi - rho_lo) * inv
+        # Clamp to [0,1] because it's a share
+        return float(max(0.0, min(1.0, rho)))
+
+    def clear_market_multi_agent_residual(
+        self,
+        action_indices: Sequence[int],
+        *,
+        clearing_price: float,
+        demand_mw: float,
+        rho_min: float,
+        rho_max: float,
+        rho_k: float,
+        rho_p0: float,
+        tie_break_random: bool = True,
+        eps: float = 1e-9,
+    ) -> Dict[str, Any]:
+        """
+        Multi-agent clearing, pay-as-cleared, with residual demand:
+            D_res(P) = D * rho(P)
+        """
+        n = len(action_indices)
+        P = float(clearing_price)
+        D = max(0.0, float(demand_mw))
+
+        rho = self.residual_share(P, rho_min=rho_min, rho_max=rho_max, k=rho_k, p0=rho_p0)
+        D_res = D * rho
+
+        # Decode bids
+        bids: List[Dict[str, float]] = []
+        for i, aidx in enumerate(action_indices):
+            bid_price, bid_qty = self.action_space.decode_to_values(int(aidx))
+            bids.append({
+                "agent_id": float(i),
+                "bid_price": float(bid_price),
+                "bid_qty": float(bid_qty),
+                "action_index": float(aidx),
+            })
+
+        # Eligible if bid <= clearing price
+        eligible = [b for b in bids if b["bid_price"] <= P + eps]
+
+        # Merit order: lowest bid first, with optional random tie-breaking
+        if tie_break_random:
+            random.shuffle(eligible)
+        eligible.sort(key=lambda b: b["bid_price"])
+
+        cleared = [0.0] * n
+        remaining = float(D_res)
+
+        for b in eligible:
+            if remaining <= eps:
+                break
+            i = int(b["agent_id"])
+            take = min(float(b["bid_qty"]), remaining)
+            cleared[i] = take
+            remaining -= take
+
+        rewards = [float(self.compute_reward(P, q)) for q in cleared]
+
+        return {
+            "clearing_price": P,
+            "demand_mw": D,
+            "rho": float(rho),
+            "residual_demand_mw": float(D_res),
+            "cleared_quantities": cleared,
+            "rewards": rewards,
+            "remaining_residual_demand": float(max(0.0, remaining)),
+        }
