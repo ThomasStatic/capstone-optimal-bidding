@@ -198,6 +198,47 @@ def build_world_and_data():
 
     return state, action_space, market_model, load_df, lmp_df
 
+from typing import List, Tuple
+
+def build_agents(n_agents: int, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
+    agents: List[TabularQLearningAgent] = []
+    for i in range(n_agents):
+        a = TabularQLearningAgent(num_actions=num_actions)
+        # If your agent has a seed() method, give each agent a different seed for tie-breaking diversity
+        if seed is not None and hasattr(a, "seed"):
+            a.seed(int(seed) + 1000 * i)
+        agents.append(a)
+    return agents
+
+def select_and_project_actions(
+    agents: List[TabularQLearningAgent],
+    state_key: str,
+    action_space: ActionSpace,
+    *,
+    temperature: float | None,
+    max_quantity: float,
+    max_notional: float,
+) -> Tuple[List[int], List[dict]]:
+    """
+    "Simultaneous" action submission: everyone picks from the same state_key,
+    we project each action to feasibility, then return the final action indices.
+    """
+    action_indices: List[int] = []
+    clip_infos: List[dict] = []
+
+    for agent in agents:
+        raw_idx = agent.select_softmax_action(state_key, temperature=temperature)
+        aidx, clip_info = action_space.project_to_feasible(
+            raw_idx,
+            max_quantity=max_quantity,
+            max_notional=max_notional,
+        )
+        action_indices.append(int(aidx))
+        clip_infos.append(clip_info)
+
+    return action_indices, clip_infos
+
+
 def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
     # For ablation (temporary change for single run)
     if overrides is not None:
