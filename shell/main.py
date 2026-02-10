@@ -482,6 +482,14 @@ def parse_args():
     
     p.add_argument("--progress_every", type=int, default=25,
                help="Print a progress line every N steps (0 disables).")
+    
+    p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
+
+    p.add_argument("--rho_min", type=float, default=0.1, help="rho_min: residual share when price is high")
+    p.add_argument("--rho_max", type=float, default=0.9, help="rho_max: residual share when price is low")
+    p.add_argument("--rho_k", type=float, default=0.05, help="k: steepness of rho(P)")
+    p.add_argument("--rho_p0", type=float, default=50.0, help="p0: switch price of rho(P)")
+
 
 
     return p.parse_args()
