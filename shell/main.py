@@ -23,6 +23,7 @@ from shell.evaluations.baseline_runner import run_policy_on_episodes
 from shell.evaluations.policy_types import Policy
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
+from typing import TypeAlias
 
 ISO = "ERCOT"
 START_DATE = "2023-01-01"
@@ -30,6 +31,8 @@ END_DATE = "2023-01-31"
 
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
+
+StateKey: TypeAlias = tuple[int, ...]
 
 def apply_demand_scale_to_state(state: State, scale: float) -> None:
     if scale == 1.0:
@@ -83,6 +86,14 @@ def build_state_and_discretizers(
         },
     )
 
+    if args.verbose:
+        print("LMP min/max:", price_df["datetime"].min(), price_df["datetime"].max())
+        print("Load columns:", list(load_df.columns))
+        ts_col = "datetime" if "datetime" in load_df.columns else "period"
+        print("Load min/max:", load_df[ts_col].min(), load_df[ts_col].max())
+        print("LMP tz:", price_df["datetime"].dtype)
+        print("Load tz:", load_df["period"].dtype)
+
     state.load_state_data(
         {
             "load": load_df.rename(columns={"period": "datetime"}),
@@ -130,17 +141,35 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
-    load_df = historic_load_api.get_market_loads()
-    load_df =load_df[load_df["respondent"] == ISO].copy()
-    load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
-    load_df = load_df.sort_values("period")
+def _ensure_hist_load_col(load_df: pd.DataFrame) -> pd.DataFrame:
+    # ERCOT API commonly returns demand in a generic column like "value"
+    candidates = ["value", "Value", "load", "Load", "demand", "Demand", "mw", "MW"]
+    found = next((c for c in candidates if c in load_df.columns), None)
+    if found is None:
+        raise ValueError(f"Could not find demand column in load_df. Columns={list(load_df.columns)}")
 
+    df = load_df.copy()
+    df[found] = pd.to_numeric(df[found], errors="coerce")
+    df = df.rename(columns={found: HIST_LOAD_COL})
+    return df
+
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
     lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
     lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
     lmp_df = lmp_df.sort_values("datetime")
+
+    lmp_start = lmp_df["datetime"].min()
+    lmp_end   = lmp_df["datetime"].max()
+
+    start = lmp_start.date().isoformat()
+    end   = lmp_end.date().isoformat()
+
+    historic_load_api = ISODemandController(start, end, ISO)
+    load_df = historic_load_api.get_market_loads()
+    load_df =load_df[load_df["respondent"] == ISO].copy()
+    load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
+    load_df = load_df.sort_values("period")
 
     return load_df, lmp_df
 
@@ -198,7 +227,49 @@ def build_world_and_data():
 
     return state, action_space, market_model, load_df, lmp_df
 
-def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[TabularQLearningAgent, State, ActionSpace, MarketModel, list[dict]]:
+from typing import Any, List, Tuple, TypeAlias
+
+def build_agents(n_agents: int, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
+    agents: List[TabularQLearningAgent] = []
+    for i in range(n_agents):
+        a = TabularQLearningAgent(num_actions=num_actions)
+        # If your agent has a seed() method, give each agent a different seed for tie-breaking diversity
+        if seed is not None and hasattr(a, "seed"):
+            a.seed(int(seed) + 1000 * i)
+        agents.append(a)
+    return agents
+
+def select_and_project_actions(
+    agents: List[TabularQLearningAgent],
+    state_key: StateKey,
+    action_space: ActionSpace,
+    *,
+    temperature: float | None,
+    max_quantity: float,
+    max_notional: float,
+) -> Tuple[List[int], List[dict]]:
+    """
+    "Simultaneous" action submission: everyone picks from the same state_key,
+    we project each action to feasibility, then return the final action indices.
+    """
+
+    action_indices: List[int] = []
+    clip_infos: List[dict] = []
+
+    for agent in agents:
+        raw_idx = agent.select_softmax_action(state_key, temperature=temperature)
+        aidx, clip_info = action_space.project_to_feasible(
+            raw_idx,
+            max_quantity=max_quantity,
+            max_notional=max_notional,
+        )
+        action_indices.append(int(aidx))
+        clip_infos.append(clip_info)
+
+    return action_indices, clip_infos
+
+
+def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[List[TabularQLearningAgent], State, ActionSpace, MarketModel, list[dict]]:
     # For ablation (temporary change for single run)
     if overrides is not None:
         for k, v in overrides.items():
@@ -215,14 +286,16 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
+    n_agents = int(getattr(args, "n_agents", 1))
+    agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
 
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
 
-    agent = TabularQLearningAgent(num_actions=action_space.n_actions)
+    ##agent = TabularQLearningAgent(num_actions=action_space.n_actions)
 
-    if seed is not None and hasattr(agent, "seed"):
-        agent.seed(seed)
+    ##if seed is not None and hasattr(agent, "seed"):
+      ##  agent.seed(seed)
 
     marginal_cost = float(market_model.params.marginal_cost)
     cost_plus_policy = CostPlusMarkupPolicy(
@@ -255,25 +328,28 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         if history_for_model.empty:
             # Minimum history requirement for start 
             history_for_model = load_df.iloc[:state.window_size].copy()
-        sarimax = SARIMAXLoadProjections(history_for_model)
-        forecast_df = sarimax.get_forecast_df()
+        #sarimax = SARIMAXLoadProjections(history_for_model)
+        #forecast_df = sarimax.get_forecast_df()
 
-        inject_epsisode_forecast(state, forecast_df)
+        #inject_epsisode_forecast(state, forecast_df)
 
         # Re-discretize now that we have forecast data
         state.apply()
         obs = state.reset(new_episode=False)
-        state_key = agent.state_to_key(obs)
+        state_key = agents[0].state_to_key(obs)
 
         done = False
         step_counter = 0
 
         while not done:
             temp = get_episode_temperature(ep_idx)
-            action_idx_raw = agent.select_softmax_action(state_key, temperature=temp)
+            ##action_idx_raw = agent.select_softmax_action(state_key, temperature=temp)
 
-            action_idx, clip_info = action_space.project_to_feasible(
-                action_idx_raw,
+            action_indices, clip_infos = select_and_project_actions(
+                agents,
+                state_key,
+                action_space,
+                temperature=temp,
                 max_quantity=MAX_BID_QUANTITY_MW,
                 max_notional=max_notional,
             )
@@ -290,59 +366,78 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 break
 
             delivery_row = state.raw_state_data.loc[delivery_time]
+
             price_val = delivery_row.get(PRICE_COL, np.nan)
             if pd.isna(price_val):
                 price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
         
-            if args.warm_start_q and state_key not in agent.Q:
-                baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
+            # Demand for residual clearing: use realized load at delivery_time if available
+            demand_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            demand_mw = float(demand_mw) if pd.notna(demand_mw) else 0.0
 
-                margin = 1.0
-                agent.warm_start_state(
-                    state_key,
-                    preferred_action=baseline_action_idx,
-                    preferred_q=baseline_reward + margin,
-                    other_q=baseline_reward - margin,
-                    only_if_unseen=True,
-                )
-            _, _, reward = market_model.clear_market_from_action(action_idx, price_val)
+            if args.warm_start_q:
+                for ag in agents:
+                    if state_key not in ag.Q:
+                        baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
 
-            if args.risk_penalty_lambda > 0.0 and bool(clip_info["clipped"]):
-                # relative penalty based on how far over notional raw action was
-                orig_notional = float(clip_info["original_notional"])
-                if max_notional > 1e-12:
-                    severity = max(0.0, (orig_notional - max_notional) / max_notional)
-                    if args.verbose: 
-                        print(f"[Risk Penalty] step={step_counter} | orig_notional={orig_notional:.4f} | max_notional={max_notional:.4f} | severity={severity:.4f}")
-                        
-                else:
-                    severity = 0.0
-                penalty = float(args.risk_penalty_lambda * (1.0 + severity))
-                reward -= penalty
+                        margin = 1.0
+                        ag.warm_start_state(
+                            state_key,
+                            preferred_action=baseline_action_idx,
+                            preferred_q=baseline_reward + margin,
+                            other_q=baseline_reward - margin,
+                            only_if_unseen=True,
+                        )
+
+            clearing_price = market_model.sample_clearing_price(float(price_val))
+            out = market_model.clear_market_multi_agent_residual(
+                action_indices,
+                clearing_price=clearing_price,
+                demand_mw=demand_mw,
+                rho_min = float(args.rho_min),
+                rho_max = float(args.rho_max),
+                rho_k= float(args.rho_k),
+                rho_p0= float(args.rho_p0),
+                tie_break_random=True,
+            )
+            rewards = list(out["rewards"])
+
+            if args.risk_penalty_lambda > 0.0:
+                for i, clip_info in enumerate(clip_infos):
+                    if bool(clip_info.get("clipped", False)):                        
+                        orig_notional = float(clip_info["original_notional"])
+                        if max_notional > 1e-12:
+                            severity = max(0.0, (orig_notional - max_notional) / max_notional)
+                            if args.verbose: 
+                                print(f"[Risk Penalty] step={step_counter} | orig_notional={orig_notional:.4f} | max_notional={max_notional:.4f} | severity={severity:.4f}")
+                                
+                        else:
+                            severity = 0.0
+                        penalty = float(args.risk_penalty_lambda * (1.0 + severity))
+                        rewards[i] -= penalty
 
             next_obs, _, done, info = state.step()
+            next_state_key = agents[0].state_to_key(next_obs)
 
-            cumulative_reward += reward
-            if args.verbose:
-                print(
-                    f"[EP {ep_idx+1} | Step {step_counter}] "
-                    f"ts={ts} | "
-                    f"state_key={state_key} | "
-                    f"action={action_idx} | "
-                    f"price={price_val:.2f} | "
-                    f"reward={reward:.4f} | "
-                    f"cumulative_reward={cumulative_reward:.4f}"
+            for i, ag in enumerate(agents):
+                ag.update_q_table(
+                    state_key,
+                    int(action_indices[i]),
+                    float(rewards[i]),
+                    next_state_key,
+                    done
                 )
 
-            next_state_key = agent.state_to_key(next_obs)
+            cumulative_reward += float(np.sum(rewards))
 
-            agent.update_q_table(
-                state_key,
-                action_idx,
-                reward,
-                next_state_key,
-                done
-            )
+            if args.verbose:
+                print(
+                    f"[EP {ep_idx+1} | Step {step_counter}] ts={ts} | "
+                    f"state_key={state_key} | "
+                    f"P={out['clearing_price']:.2f} | demand={out['demand_mw']:.2f} | rho={out['rho']:.3f} | "
+                    f"actions={action_indices} | rewards={np.round(rewards, 4).tolist()} | "
+                    f"cum_total_reward={cumulative_reward:.4f}"
+                )
 
             state_key = next_state_key
             obs = next_obs
@@ -367,13 +462,13 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         })
          
     with open("q_table.pkl", "wb") as f:
-        pickle.dump(agent.Q, f)
+        pickle.dump([ag.Q for ag in agents], f)
 
     with open("policy.pkl", "wb") as f:
-        pickle.dump(agent.extract_softmax_policy(), f)
+        pickle.dump([ag.extract_softmax_policy() for ag in agents], f)
     
     print("Training complete. Q-table and policy saved.")
-    return agent, state, action_space, market_model, episode_logs
+    return agents, state, action_space, market_model, episode_logs
 
 def run_baselines(
         *, # Keyward-only arguments since complex signature
@@ -482,6 +577,14 @@ def parse_args():
     
     p.add_argument("--progress_every", type=int, default=25,
                help="Print a progress line every N steps (0 disables).")
+    
+    p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
+
+    p.add_argument("--rho_min", type=float, default=0.1, help="rho_min: residual share when price is high")
+    p.add_argument("--rho_max", type=float, default=0.9, help="rho_max: residual share when price is low")
+    p.add_argument("--rho_k", type=float, default=0.05, help="k: steepness of rho(P)")
+    p.add_argument("--rho_p0", type=float, default=50.0, help="p0: switch price of rho(P)")
+
 
 
     return p.parse_args()
