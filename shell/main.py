@@ -85,12 +85,15 @@ def build_state_and_discretizers(
             "price": price_disc,
         },
     )
-    print("LMP min/max:", price_df["datetime"].min(), price_df["datetime"].max())
-    print("Load columns:", list(load_df.columns))
-    ts_col = "datetime" if "datetime" in load_df.columns else "period"
-    print("Load min/max:", load_df[ts_col].min(), load_df[ts_col].max())
-    print("LMP tz:", price_df["datetime"].dtype)
-    print("Load tz:", load_df["period"].dtype)
+
+    if args.verbose:
+        print("LMP min/max:", price_df["datetime"].min(), price_df["datetime"].max())
+        print("Load columns:", list(load_df.columns))
+        ts_col = "datetime" if "datetime" in load_df.columns else "period"
+        print("Load min/max:", load_df[ts_col].min(), load_df[ts_col].max())
+        print("LMP tz:", price_df["datetime"].dtype)
+        print("Load tz:", load_df["period"].dtype)
+
     state.load_state_data(
         {
             "load": load_df.rename(columns={"period": "datetime"}),
@@ -325,10 +328,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         if history_for_model.empty:
             # Minimum history requirement for start 
             history_for_model = load_df.iloc[:state.window_size].copy()
-        sarimax = SARIMAXLoadProjections(history_for_model)
-        forecast_df = sarimax.get_forecast_df()
+        #sarimax = SARIMAXLoadProjections(history_for_model)
+        #forecast_df = sarimax.get_forecast_df()
 
-        inject_epsisode_forecast(state, forecast_df)
+        #inject_epsisode_forecast(state, forecast_df)
 
         # Re-discretize now that we have forecast data
         state.apply()
