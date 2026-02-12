@@ -308,6 +308,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             setattr(args, k, v)
 
     load_df, lmp_df = load_data()
+    forecast_series = _load_ercot_forecast_series()
     state, action_space, market_model = build_world(load_df, lmp_df)
     apply_demand_scale_to_state(state, float(args.demand_scale))
     state.apply()
@@ -354,16 +355,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         state.episode_start = start_idx
         episode_start_ts = state.raw_state_data.index[start_idx]
 
-        # Build history for SARIMAX only using data prior to episode start
-        history_mask = load_df["period"] < episode_start_ts
-        history_for_model = load_df.loc[history_mask].copy()
-        if history_for_model.empty:
-            # Minimum history requirement for start 
-            history_for_model = load_df.iloc[:state.window_size].copy()
-        #sarimax = SARIMAXLoadProjections(history_for_model)
-        #forecast_df = sarimax.get_forecast_df()
-
-        #inject_epsisode_forecast(state, forecast_df)
+        h_end = episode_start_ts + pd.Timedelta(hours=FORECAST_HORIZON_HOURS)
+        f_slice = forecast_series.loc[(forecast_series.index >= episode_start_ts) & (forecast_series.index <= h_end)]
+        forecast_df = f_slice.rename(FORECAST_LOAD_COL).reset_index()
+        inject_epsisode_forecast(state, forecast_df)
 
         # Re-discretize now that we have forecast data
         state.apply()
