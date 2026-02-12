@@ -26,13 +26,55 @@ from shell.tabular_q_agent import TabularQLearningAgent
 from typing import TypeAlias
 
 ISO = "ERCOT"
-START_DATE = "2023-01-01"
-END_DATE = "2023-01-31"
+START_DATE = "2025-01-01"
+END_DATE = "2026-01-31"
 
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
+FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
+FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
+
 StateKey: TypeAlias = tuple[int, ...]
+
+def _load_ercot_forecast_series() -> pd.Series:
+    """
+    Returns an hourly forecast series indexed by UTC datetime, in MW.
+    Uses TOTAL_SYSTEM_LOAD columns and sums Houston+North+South+West.
+    """
+    df = pd.read_csv(
+        FORECAST_CSV_PATH,
+        na_values=["-", " -", " -   ", " -   -", "—"],
+    )
+
+    df = df.rename(columns={"Date_Time_UTC": "datetime"})
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+
+    # Pick the 4 regional total system load columns
+    cols = [
+        "ERCOT_HOUSTON_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_NORTH_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_SOUTH_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_WEST_TOTAL_SYSTEM_LOAD (MWh)",
+    ]
+
+    # Clean numeric (handles "13,896.77" style strings)
+    for c in cols:
+        df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+
+    df["forecast_total_mw"] = df[cols].sum(axis=1)
+
+    start_ts = pd.Timestamp(START_DATE, tz="UTC")
+    end_ts = pd.Timestamp(END_DATE, tz="UTC")
+
+    s = (
+        df.loc[(df["datetime"] >= start_ts) & (df["datetime"] <= end_ts), ["datetime", "forecast_total_mw"]]
+          .dropna()
+          .set_index("datetime")["forecast_total_mw"]
+          .sort_index()
+    )
+
+    return s
 
 def apply_demand_scale_to_state(state: State, scale: float) -> None:
     if scale == 1.0:
@@ -141,27 +183,17 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
-def _ensure_hist_load_col(load_df: pd.DataFrame) -> pd.DataFrame:
-    # ERCOT API commonly returns demand in a generic column like "value"
-    candidates = ["value", "Value", "load", "Load", "demand", "Demand", "mw", "MW"]
-    found = next((c for c in candidates if c in load_df.columns), None)
-    if found is None:
-        raise ValueError(f"Could not find demand column in load_df. Columns={list(load_df.columns)}")
-
-    df = load_df.copy()
-    df[found] = pd.to_numeric(df[found], errors="coerce")
-    df = df.rename(columns={found: HIST_LOAD_COL})
-    return df
-
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
     lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
     lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
-    lmp_df = lmp_df.sort_values("datetime")
+    lmp_df = lmp_df.loc[
+        (lmp_df["datetime"] >= pd.to_datetime(START_DATE, utc=True)) &
+        (lmp_df["datetime"] <= pd.to_datetime(END_DATE, utc=True))
+    ]
 
     lmp_start = lmp_df["datetime"].min()
     lmp_end   = lmp_df["datetime"].max()
-
     start = lmp_start.date().isoformat()
     end   = lmp_end.date().isoformat()
 
@@ -276,6 +308,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             setattr(args, k, v)
 
     load_df, lmp_df = load_data()
+    forecast_series = _load_ercot_forecast_series()
     state, action_space, market_model = build_world(load_df, lmp_df)
     apply_demand_scale_to_state(state, float(args.demand_scale))
     state.apply()
@@ -322,16 +355,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         state.episode_start = start_idx
         episode_start_ts = state.raw_state_data.index[start_idx]
 
-        # Build history for SARIMAX only using data prior to episode start
-        history_mask = load_df["period"] < episode_start_ts
-        history_for_model = load_df.loc[history_mask].copy()
-        if history_for_model.empty:
-            # Minimum history requirement for start 
-            history_for_model = load_df.iloc[:state.window_size].copy()
-        #sarimax = SARIMAXLoadProjections(history_for_model)
-        #forecast_df = sarimax.get_forecast_df()
-
-        #inject_epsisode_forecast(state, forecast_df)
+        h_end = episode_start_ts + pd.Timedelta(hours=FORECAST_HORIZON_HOURS)
+        f_slice = forecast_series.loc[(forecast_series.index >= episode_start_ts) & (forecast_series.index <= h_end)]
+        forecast_df = f_slice.rename(FORECAST_LOAD_COL).reset_index()
+        inject_epsisode_forecast(state, forecast_df)
 
         # Re-discretize now that we have forecast data
         state.apply()
