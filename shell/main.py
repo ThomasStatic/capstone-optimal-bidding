@@ -26,8 +26,8 @@ from shell.tabular_q_agent import TabularQLearningAgent
 from typing import TypeAlias
 
 ISO = "ERCOT"
-START_DATE = "2023-01-01"
-END_DATE = "2023-01-31"
+START_DATE = "2025-01-01"
+END_DATE = "2026-01-31"
 
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
@@ -141,27 +141,17 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 
     return ActionSpace(price_disc=price_disc, quantity_disc=qty_disc)
 
-def _ensure_hist_load_col(load_df: pd.DataFrame) -> pd.DataFrame:
-    # ERCOT API commonly returns demand in a generic column like "value"
-    candidates = ["value", "Value", "load", "Load", "demand", "Demand", "mw", "MW"]
-    found = next((c for c in candidates if c in load_df.columns), None)
-    if found is None:
-        raise ValueError(f"Could not find demand column in load_df. Columns={list(load_df.columns)}")
-
-    df = load_df.copy()
-    df[found] = pd.to_numeric(df[found], errors="coerce")
-    df = df.rename(columns={found: HIST_LOAD_COL})
-    return df
-
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
     lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
     lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
-    lmp_df = lmp_df.sort_values("datetime")
+    lmp_df = lmp_df.loc[
+        (lmp_df["datetime"] >= pd.to_datetime(START_DATE, utc=True)) &
+        (lmp_df["datetime"] <= pd.to_datetime(END_DATE, utc=True))
+    ]
 
     lmp_start = lmp_df["datetime"].min()
     lmp_end   = lmp_df["datetime"].max()
-
     start = lmp_start.date().isoformat()
     end   = lmp_end.date().isoformat()
 
