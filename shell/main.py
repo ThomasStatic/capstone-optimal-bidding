@@ -32,7 +32,49 @@ END_DATE = "2026-01-31"
 NUM_DISCRETIZER_BINS = 8
 MAX_BID_QUANTITY_MW = 50
 
+FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
+FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
+
 StateKey: TypeAlias = tuple[int, ...]
+
+def _load_ercot_forecast_series() -> pd.Series:
+    """
+    Returns an hourly forecast series indexed by UTC datetime, in MW.
+    Uses TOTAL_SYSTEM_LOAD columns and sums Houston+North+South+West.
+    """
+    df = pd.read_csv(
+        FORECAST_CSV_PATH,
+        na_values=["-", " -", " -   ", " -   -", "—"],
+    )
+
+    df = df.rename(columns={"Date_Time_UTC": "datetime"})
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+
+    # Pick the 4 regional total system load columns
+    cols = [
+        "ERCOT_HOUSTON_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_NORTH_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_SOUTH_TOTAL_SYSTEM_LOAD (MWh)",
+        "ERCOT_WEST_TOTAL_SYSTEM_LOAD (MWh)",
+    ]
+
+    # Clean numeric (handles "13,896.77" style strings)
+    for c in cols:
+        df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+
+    df["forecast_total_mw"] = df[cols].sum(axis=1)
+
+    start_ts = pd.Timestamp(START_DATE, tz="UTC")
+    end_ts = pd.Timestamp(END_DATE, tz="UTC")
+
+    s = (
+        df.loc[(df["datetime"] >= start_ts) & (df["datetime"] <= end_ts), ["datetime", "forecast_total_mw"]]
+          .dropna()
+          .set_index("datetime")["forecast_total_mw"]
+          .sort_index()
+    )
+
+    return s
 
 def apply_demand_scale_to_state(state: State, scale: float) -> None:
     if scale == 1.0:
