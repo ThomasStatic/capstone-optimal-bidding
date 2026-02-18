@@ -199,6 +199,7 @@ class MetricsTracker:
     def competition_table(self) -> pd.DataFrame:
         """One row per agent with competition KPIs."""
         edf = self.episode_summary_df()
+        sdf = self.step_df()
         records = []
 
         for i in range(self.n_agents):
@@ -206,7 +207,6 @@ class MetricsTracker:
             if reward_col not in edf.columns:
                 continue
 
-            # Total rewards across all agents per episode
             all_reward_cols = [f"agent_{j}_total_reward" for j in range(self.n_agents)
                             if f"agent_{j}_total_reward" in edf.columns]
             total_rewards = edf[all_reward_cols].sum(axis=1)
@@ -215,21 +215,30 @@ class MetricsTracker:
             win_rate     = (edf[reward_col] == edf[all_reward_cols].max(axis=1)).mean()
             price_impact = edf[reward_col].corr(edf["mean_clearing_price"])
 
-            spread = None
-            if self.action_space is not None:
-                try:
-                    mean_idx = edf[f"agent_{i}_mean_action_idx"].mean()
-                    bid_price, _ = self.action_space.decode_to_values(int(round(mean_idx)))
-                    spread = round(bid_price - edf["mean_clearing_price"].mean(), 2)
-                except Exception:
-                    pass
-            records[-1]["market_spread"] = spread
+            # Market spread, grabbing all spreads, mean spread, standard deviation of spread, and the bid efficiency.
+            mean_spread = std_spread = bid_efficiency = None
+            if self.action_space is not None and not sdf.empty:
+                action_col = f"agent_{i}_action_idx"
+                if action_col in sdf.columns:
+                    try:
+                        bid_prices = sdf[action_col].dropna().astype(int).apply(
+                            lambda idx: self.action_space.decode_to_values(idx)[0]
+                        )
+                        spreads     = bid_prices.values - sdf.loc[bid_prices.index, "clearing_price"].values
+                        mean_spread    = round(float(spreads.mean()), 2)
+                        std_spread     = round(float(spreads.std()), 2)
+                        bid_efficiency = round(float((spreads >= 0).mean() * 100), 1) 
+                    except Exception:
+                        pass
 
             records.append({
-                "agent":        i,
-                "profit_share": round(profit_share * 100, 2), 
-                "win_rate":     round(win_rate * 100, 2),   
-                "price_impact": round(price_impact, 3),
+                "agent":          i,
+                "profit_share":   round(profit_share * 100, 2),
+                "win_rate":       round(win_rate * 100, 2),
+                "price_impact":   round(price_impact, 3),
+                "mean_spread":    mean_spread,
+                "spread_std":     std_spread,     
+                "bid_efficiency": bid_efficiency,
             })
 
         return pd.DataFrame(records).set_index("agent")
