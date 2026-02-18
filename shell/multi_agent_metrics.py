@@ -195,6 +195,45 @@ class MetricsTracker:
 
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    ## Function for competition metrics
+    def competition_table(self) -> pd.DataFrame:
+        """One row per agent with competition KPIs."""
+        edf = self.episode_summary_df()
+        records = []
+
+        for i in range(self.n_agents):
+            reward_col = f"agent_{i}_total_reward"
+            if reward_col not in edf.columns:
+                continue
+
+            # Total rewards across all agents per episode
+            all_reward_cols = [f"agent_{j}_total_reward" for j in range(self.n_agents)
+                            if f"agent_{j}_total_reward" in edf.columns]
+            total_rewards = edf[all_reward_cols].sum(axis=1)
+
+            profit_share = (edf[reward_col] / total_rewards.replace(0, float("nan"))).mean()
+            win_rate     = (edf[reward_col] == edf[all_reward_cols].max(axis=1)).mean()
+            price_impact = edf[reward_col].corr(edf["mean_clearing_price"])
+
+            spread = None
+            if self.action_space is not None:
+                try:
+                    mean_idx = edf[f"agent_{i}_mean_action_idx"].mean()
+                    bid_price, _ = self.action_space.decode_to_values(int(round(mean_idx)))
+                    spread = round(bid_price - edf["mean_clearing_price"].mean(), 2)
+                except Exception:
+                    pass
+            records[-1]["market_spread"] = spread
+
+            records.append({
+                "agent":        i,
+                "profit_share": round(profit_share * 100, 2), 
+                "win_rate":     round(win_rate * 100, 2),   
+                "price_impact": round(price_impact, 3),
+            })
+
+        return pd.DataFrame(records).set_index("agent")
+
 # Helpers
     @staticmethod
     def _entropy(actions: List[int]) -> float:
@@ -243,6 +282,13 @@ def export_agent_csv(metrics, path="agent_kpis.csv"):
     df = metrics.agent_kpi_df()
     df.to_csv(path)
     print(f"Saved agent CSV    -> {path}")
+    return path
+
+def export_competition_csv(metrics, path="competition_table.csv"):
+    """Comparison table across agents: profit share, win rate, price impact, market spread."""
+    df = metrics.competition_table()
+    df.to_csv(path)
+    print(f"Saved competition CSV -> {path}")
     return path
 
 def plot_rewards(metrics, path="episode_rewards.png"):
@@ -325,4 +371,5 @@ def export_multi_agent_metrics(metrics, out_dir="Analysis\Metrics\Multi_Agent.")
         "rewards_plot":       plot_rewards(metrics,              p(f"episode_rewards_{current_time}.png")),
         "clearing_price_plot":plot_clearing_price(metrics,       p(f"clearing_price_{current_time}.png")),
         "bid_dist_plot":      plot_bid_distributions(metrics,    p(f"bid_distributions_{current_time}.png")),
+        "competition_csv": export_competition_csv(metrics, p(f"competition_table_{current_time}.csv")),
     }
