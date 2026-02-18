@@ -11,6 +11,7 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 AGENT_COLORS = ["#2E86AB", "#E84855", "#3BB273", "#F18F01"]
 
@@ -76,6 +77,7 @@ class MetricsTracker:
             self._ep_rewards[i].append(r)
 
     def close_episode(self, episode: int) -> None:
+        """Cleanly generate episode summary, then reset"""
         ep_steps = [s for s in self._steps if s.episode == episode]
         if not ep_steps:
             return
@@ -105,7 +107,7 @@ class MetricsTracker:
             summary[f"agent_{i}_mean_reward"] = float(np.mean(agent_rewards))
             summary[f"agent_{i}_std_reward"] = float(np.std(agent_rewards))
             summary[f"agent_{i}_clip_rate"] = float(np.mean(agent_clipped))
-            summary[f"agent_{i}_mean_action_idx"] = float(np.mean(agent_actions))
+            # summary[f"agent_{i}_mean_action_idx"] = float(np.mean(agent_actions))
             summary[f"agent_{i}_action_entropy"] = float(self._entropy(agent_actions))
 
             # Produce bid-action space distributions
@@ -196,6 +198,8 @@ class MetricsTracker:
 # Helpers
     @staticmethod
     def _entropy(actions: List[int]) -> float:
+        """Entropy on action distribution. 
+        Basically determines how spread out an agent's bids are across action indices"""
         if not actions:
             return 0.0
         _, counts = np.unique(actions, return_counts=True)
@@ -203,7 +207,7 @@ class MetricsTracker:
         return float(-np.sum(probs * np.log(probs + 1e-12)))
 
     def summary_stats(self) -> dict:
-        """Quick text summary printed to console."""
+        """Summary printed to console."""
         edf = self.episode_summary_df()
         if edf.empty:
             return {}
@@ -233,15 +237,15 @@ def export_episode_csv(metrics, path="episode_metrics.csv"):
 
 def export_agent_csv(metrics, path="agent_kpis.csv"):
     """
-    One row per agent with the following columnsolumns: mean_reward, std_reward,
-    clip_rate, action_entropy. These are all averaged over the episodes.
+    One row per agent with the following columnsolumns: mean_reward, std_reward, clip_rate, action_entropy.
+    These are all averaged over the episodes.
     """
     df = metrics.agent_kpi_df()
     df.to_csv(path)
     print(f"Saved agent CSV    -> {path}")
     return path
 
-def plot_rewards(metrics, path="rewards.png"):
+def plot_rewards(metrics, path="episode_rewards.png"):
     edf = metrics.episode_summary_df()
     fig, ax = plt.subplots(figsize=(9, 4))
 
@@ -267,12 +271,12 @@ def plot_clearing_price(metrics, path="clearing_price.png"):
 
     ax.plot(edf.index, edf["mean_clearing_price"],
             color="#2E86AB", linewidth=2, label="Mean price")
-    ax.fill_between(
-        edf.index,
-        edf["mean_clearing_price"] - edf["std_clearing_price"],
-        edf["mean_clearing_price"] + edf["std_clearing_price"],
-        alpha=0.2, color="#2E86AB", label="±1 std",
-    )
+    # ax.fill_between(
+    #     edf.index,
+    #     edf["mean_clearing_price"] - edf["std_clearing_price"],
+    #     edf["mean_clearing_price"] + edf["std_clearing_price"],
+    #     alpha=0.2, color="#2E86AB", label="±1 std",
+    # )
 
     ax.set(title="Market Clearing Price per Episode",
            xlabel="Episode", ylabel="Price ($/MWh)")
@@ -313,10 +317,12 @@ def export_multi_agent_metrics(metrics, out_dir="Analysis\Metrics\Multi_Agent.")
     os.makedirs(out_dir, exist_ok=True)
     p = lambda fname: os.path.join(out_dir, fname)
 
+    current_time = datetime.today().strftime("%Y%M%d_%H%M%S")
+
     return {
-        "episode_csv":        export_episode_csv(metrics,        p("episode_metrics.csv")),
-        "agent_csv":          export_agent_csv(metrics,          p("agent_kpis.csv")),
-        "rewards_plot":       plot_rewards(metrics,              p("rewards.png")),
-        "clearing_price_plot":plot_clearing_price(metrics,       p("clearing_price.png")),
-        "bid_dist_plot":      plot_bid_distributions(metrics,    p("bid_distributions.png")),
+        "episode_csv":        export_episode_csv(metrics,        p(f"episode_metrics_{current_time}.csv")),
+        "agent_csv":          export_agent_csv(metrics,          p(f"agent_kpis_{current_time}.csv")),
+        "rewards_plot":       plot_rewards(metrics,              p(f"episode_rewards_{current_time}.png")),
+        "clearing_price_plot":plot_clearing_price(metrics,       p(f"clearing_price_{current_time}.png")),
+        "bid_dist_plot":      plot_bid_distributions(metrics,    p(f"bid_distributions_{current_time}.png")),
     }
