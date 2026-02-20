@@ -11,9 +11,8 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import math
 from datetime import datetime
-
-AGENT_COLORS = ["#2E86AB", "#E84855", "#3BB273", "#F18F01"]
 
 @dataclasses.dataclass
 class StepRecord:
@@ -108,7 +107,12 @@ class MetricsTracker:
             summary[f"agent_{i}_std_reward"] = float(np.std(agent_rewards))
             summary[f"agent_{i}_clip_rate"] = float(np.mean(agent_clipped))
             # summary[f"agent_{i}_mean_action_idx"] = float(np.mean(agent_actions))
-            summary[f"agent_{i}_action_entropy"] = float(self._entropy(agent_actions))
+            
+            ## Entropy Calculation
+            raw_entropy = self._entropy(agent_actions)
+            max_entropy = math.log(self.action_space.n_actions) if self.action_space is not None else 1.0
+            normalised  = raw_entropy / max_entropy if max_entropy > 0 else 0.0
+            summary[f"agent_{i}_action_entropy"] = round(normalised, 4)
 
             # Produce bid-action space distributions
             if self.action_space is not None:
@@ -116,7 +120,7 @@ class MetricsTracker:
                     bid_prices = []
                     bid_qtys = []
                     for aidx in agent_actions:
-                        bid_p, bid_q = self.action_space.decode_action(aidx)
+                        bid_p, bid_q = self.action_space.decode_to_values(aidx)
                         bid_prices.append(bid_p)
                         bid_qtys.append(bid_q)
                     summary[f"agent_{i}_mean_bid_price"] = float(np.mean(bid_prices))
@@ -243,7 +247,28 @@ class MetricsTracker:
 
         return pd.DataFrame(records).set_index("agent")
 
-# Helpers
+    def stability_df(self, window: int = 14) -> pd.DataFrame:
+        """Default Window: 14 Episodes"""
+        edf = self.episode_summary_df()
+        df  = pd.DataFrame(index=edf.index)
+
+        # Rolling Variance Calculation
+        for i in range(self.n_agents):
+            col = f"agent_{i}_total_reward"
+            if col in edf.columns:
+                df[f"agent_{i}_rolling_reward_var"] = (
+                    edf[col].rolling(window, min_periods=1).var()
+                )
+
+        # Policy entropy, which is already logged
+        for i in range(self.n_agents):
+            col = f"agent_{i}_action_entropy"
+            if col in edf.columns:
+                df[f"agent_{i}_entropy"] = edf[col]
+
+        return df
+
+    # Helpers
     @staticmethod
     def _entropy(actions: List[int]) -> float:
         """Entropy on action distribution. 
@@ -270,6 +295,11 @@ class MetricsTracker:
             if col in edf.columns:
                 out[f"agent_{i}_mean_total_reward"] = float(edf[col].mean())
         return out
+    
+def _agent_color(i: int, n_agents: int) -> str:
+    cmap = matplotlib.cm.get_cmap("tab20" if n_agents <= 20 else "turbo")
+    rgba = cmap(i / max(n_agents - 1, 1))
+    return matplotlib.colors.to_hex(rgba)
     
 # Export Metrics for multi-agent simulation
 def export_episode_csv(metrics, path="episode_metrics.csv"):
@@ -306,12 +336,18 @@ def plot_rewards(metrics, path="episode_rewards.png"):
 
     for i in range(metrics.n_agents):
         col = f"agent_{i}_total_reward"
+        color = _agent_color(i, metrics.n_agents)
         if col in edf.columns:
             ax.plot(edf.index, edf[col], label=f"Agent {i}",
-                    color=AGENT_COLORS[i % len(AGENT_COLORS)], linewidth=2)
+                    color=color, linewidth=2)
 
     ax.set(title="Reward per Episode", xlabel="Episode", ylabel="Total Reward")
-    ax.legend()
+    ax.legend(
+        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
+        fontsize=7,
+        loc="upper right",
+        framealpha=0.5,
+    )
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -351,13 +387,21 @@ def plot_bid_distributions(metrics, path="bid_distributions.png"):
 
     for i in range(n):
         ax = axes[0][i]
+        color = _agent_color(i, n)
         sub = bdf[bdf["agent"] == i] if not bdf.empty else None
         if sub is not None and not sub.empty:
             ax.bar(sub["action_idx"], sub["count"],
-                   color=AGENT_COLORS[i % len(AGENT_COLORS)], alpha=0.85)
+                   color=color, alpha=0.85)
         ax.set(title=f"Agent {i} — Bid Distribution",
                xlabel="Action Index", ylabel="Count")
         ax.grid(alpha=0.3, axis="y")
+
+    ax.legend(
+        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
+        fontsize=7,
+        loc="upper right",
+        framealpha=0.5,
+    )
 
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -365,14 +409,62 @@ def plot_bid_distributions(metrics, path="bid_distributions.png"):
     print(f"Saved bid dist plot-> {path}")
     return path
 
-def export_multi_agent_metrics(metrics, out_dir="Analysis\Metrics\Multi_Agent."):
+def export_stability_csv(metrics, path="stability.csv"):
+    """Rolling reward variance and per-episode entropy per agent."""
+    df = metrics.stability_df()
+    df.to_csv(path)
+    print(f"Saved stability CSV -> {path}")
+    return path
+
+
+def plot_stability(metrics, path="stability.png"):
+    """Two subplots: rolling reward variance and entropy over episodes."""
+    df  = metrics.stability_df()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+
+    for i in range(metrics.n_agents):
+        var_col = f"agent_{i}_rolling_reward_var"
+        ent_col = f"agent_{i}_entropy"
+        color = _agent_color(i, metrics.n_agents)
+
+        if var_col in df.columns:
+            ax1.plot(df.index, df[var_col], label=f"Agent {i}",
+                     color=color, linewidth=2)
+        if ent_col in df.columns:
+            ax2.plot(df.index, df[ent_col], label=f"Agent {i}",
+                     color=color, linewidth=2)
+
+    ax1.set(title="Rolling Reward Variance (window=14)", ylabel="Variance")
+    ax2.set(title="Policy Entropy per Episode", xlabel="Episode", ylabel="Entropy")
+    ax1.legend(
+        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
+        fontsize=7,
+        loc="upper right",
+        framealpha=0.5,
+    )
+    ax2.legend(
+        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
+        fontsize=7,
+        loc="upper right",
+        framealpha=0.5,
+    )
+    ax2.axhline(0.2, color="green", linestyle="--", linewidth=1, alpha=0.6, label="Converged threshold")
+    ax2.axhline(0.8, color="red",   linestyle="--", linewidth=1, alpha=0.6, label="High exploration")
+    ax2.set(ylabel="Normalised Entropy (0=converged, 1=random)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    print(f"Saved stability plot -> {path}")
+    return path
+
+def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metrics", "Multi_Agent")):
     """
     Run all exports (2 CSVs + 3 charts) into out_dir.
     """
     os.makedirs(out_dir, exist_ok=True)
     p = lambda fname: os.path.join(out_dir, fname)
 
-    current_time = datetime.today().strftime("%Y%M%d_%H%M%S")
+    current_time = datetime.today().strftime("%Y%m%d_%H%M%S")
 
     return {
         "episode_csv":        export_episode_csv(metrics,        p(f"episode_metrics_{current_time}.csv")),
@@ -381,4 +473,6 @@ def export_multi_agent_metrics(metrics, out_dir="Analysis\Metrics\Multi_Agent.")
         "clearing_price_plot":plot_clearing_price(metrics,       p(f"clearing_price_{current_time}.png")),
         "bid_dist_plot":      plot_bid_distributions(metrics,    p(f"bid_distributions_{current_time}.png")),
         "competition_csv": export_competition_csv(metrics, p(f"competition_table_{current_time}.csv")),
+        "stability_csv":  export_stability_csv(metrics, p(f"stability_{current_time}.csv")),
+        "stability_plot": plot_stability(metrics,        p(f"stability_{current_time}.png"))
     }
