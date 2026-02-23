@@ -1,9 +1,7 @@
-from typing import Optional, Protocol, TypedDict
-import pandas as pd
+from typing import Protocol
 
+from shell.agent_interface import BiddingAgent, Observation
 
-class PolicyObs(TypedDict):
-    timestamp: pd.Timestamp
-    
-class Policy(Protocol):
-    def act(self, obs: PolicyObs | None = None) -> int: ...
+# Re-export for consumers that expect Policy types
+PolicyObs = Observation  # Observation extends PolicyObs (timestamp required)
+Policy = BiddingAgent  # Standardized interface: act(obs) -> int

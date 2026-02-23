@@ -20,10 +20,10 @@ from shell.market_model import MarketModel, MarketParams
 from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
 from shell.baselines.historical_quantile import HistoricalQuantilePolicy
 from shell.evaluations.baseline_runner import run_policy_on_episodes
+from shell.agent_interface import Observation
 from shell.evaluations.policy_types import Policy
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
-from typing import TypeAlias
 
 ISO = "ERCOT"
 START_DATE = "2025-01-01"
@@ -34,8 +34,6 @@ MAX_BID_QUANTITY_MW = 50
 
 FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
 FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
-
-StateKey: TypeAlias = tuple[int, ...]
 
 def _load_ercot_forecast_series() -> pd.Series:
     """
@@ -273,15 +271,14 @@ def build_agents(n_agents: int, num_actions: int, *, seed: int | None = None) ->
 
 def select_and_project_actions(
     agents: List[TabularQLearningAgent],
-    state_key: StateKey,
+    obs: Observation,
     action_space: ActionSpace,
     *,
-    temperature: float | None,
     max_quantity: float,
     max_notional: float,
 ) -> Tuple[List[int], List[dict]]:
     """
-    "Simultaneous" action submission: everyone picks from the same state_key,
+    "Simultaneous" action submission: each agent acts from the same obs,
     we project each action to feasibility, then return the final action indices.
     """
 
@@ -289,7 +286,7 @@ def select_and_project_actions(
     clip_infos: List[dict] = []
 
     for agent in agents:
-        raw_idx = agent.select_softmax_action(state_key, temperature=temperature)
+        raw_idx = agent.act(obs)
         aidx, clip_info = action_space.project_to_feasible(
             raw_idx,
             max_quantity=max_quantity,
@@ -337,7 +334,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         markup=float(args.markup),
         quantity_mw=MAX_BID_QUANTITY_MW,
     )
-    baseline_action_idx = int(cost_plus_policy.act(None))
 
     episode_logs: list[dict] = []
 
@@ -370,18 +366,20 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
         while not done:
             temp = get_episode_temperature(ep_idx)
-            ##action_idx_raw = agent.select_softmax_action(state_key, temperature=temp)
+            ts = state.timestamps[state.ptr]
+            step_obs: Observation = {
+                "timestamp": ts,
+                "state_key": state_key,
+                "temperature": temp,
+            }
 
             action_indices, clip_infos = select_and_project_actions(
                 agents,
-                state_key,
+                step_obs,
                 action_space,
-                temperature=temp,
                 max_quantity=MAX_BID_QUANTITY_MW,
                 max_notional=max_notional,
             )
-
-            ts = state.timestamps[state.ptr]
 
             # Bidding 24 hours in advance
             delivery_time = ts + pd.Timedelta(hours=24)
@@ -403,10 +401,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             demand_mw = float(demand_mw) if pd.notna(demand_mw) else 0.0
 
             if args.warm_start_q:
+                baseline_action_idx = int(cost_plus_policy.act(step_obs))
                 for ag in agents:
                     if state_key not in ag.Q:
                         baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
-
                         margin = 1.0
                         ag.warm_start_state(
                             state_key,
@@ -445,14 +443,18 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             next_obs, _, done, info = state.step()
             next_state_key = agents[0].state_to_key(next_obs)
+            next_step_obs: Observation = {
+                "timestamp": state.timestamps[state.ptr],
+                "state_key": next_state_key,
+            }
 
             for i, ag in enumerate(agents):
-                ag.update_q_table(
-                    state_key,
+                ag.update(
+                    step_obs,
                     int(action_indices[i]),
                     float(rewards[i]),
-                    next_state_key,
-                    done
+                    next_step_obs,
+                    done,
                 )
 
             cumulative_reward += float(np.sum(rewards))
@@ -492,7 +494,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         pickle.dump([ag.Q for ag in agents], f)
 
     with open("policy.pkl", "wb") as f:
-        pickle.dump([ag.extract_softmax_policy() for ag in agents], f)
+        pickle.dump([ag.extract_policy() for ag in agents], f)
     
     print("Training complete. Q-table and policy saved.")
     return agents, state, action_space, market_model, episode_logs

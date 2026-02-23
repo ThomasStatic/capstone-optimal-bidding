@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-import pickle
 from typing import Any, Callable
 
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 
+from shell.agent_interface import load_saved_agents, state_vec_to_key
 from shell.linear_approximator import PRICE_COL
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 
@@ -35,15 +35,6 @@ def _require_price_series(lmp_df: pd.DataFrame) -> pd.Series:
     )
 
 
-def _state_to_key(obs) -> tuple[int, ...]:
-    # obs is a pandas Series in your pipeline
-    if hasattr(obs, "to_numpy"):
-        vals = obs.to_numpy()
-    else:
-        vals = np.asarray(obs)
-    return tuple(int(v) for v in vals)
-
-
 def evaluate_saved_policy(
     *,
     build_world_fn: Callable[[], tuple[Any, Any, Any, pd.DataFrame, pd.DataFrame]],
@@ -61,17 +52,8 @@ def evaluate_saved_policy(
 
     state, action_space, market_model, load_df, lmp_df = build_world_fn()
 
-    # load deterministic policy (dict: state_key -> action_idx)
-    with open(policy_path, "rb") as f:
-        policy_map = pickle.load(f)
-
-    q_table = None
-    if q_table_path:
-        try:
-            with open(q_table_path, "rb") as f:
-                q_table = pickle.load(f)
-        except FileNotFoundError:
-            q_table = None
+    agents = load_saved_agents(policy_path, q_table_path, fallback_action=0)
+    agent = agents[0]
 
     # episode start indices (same style as your train loop)
     episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
@@ -104,32 +86,23 @@ def evaluate_saved_policy(
 
         state.apply()
         obs = state.reset(new_episode=False)
-        state.ptr = start_idx  # if your State supports direct pointer control; otherwise ignore this line
+        state_key = state_vec_to_key(obs)
 
         done = False
         cumulative_reward = 0.0
-
-        # start
-        obs = state.reset(new_episode=False)
-        state_key = _state_to_key(obs)
-
         step_counter = 0
-        while not done:
-            # choose action
-            if state_key in policy_map:
-                action_idx_raw = int(policy_map[state_key])
-            elif q_table is not None and state_key in q_table:
-                action_idx_raw = int(np.argmax(q_table[state_key]))
-            else:
-                action_idx_raw = 0  # safe fallback
 
-            action_idx, clip_info = action_space.project_to_feasible(
+        while not done:
+            ts = state.timestamps[state.ptr]
+            step_obs = {"timestamp": ts, "state_key": state_key}
+            action_idx_raw = agent.act(step_obs)
+
+            action_idx, _ = action_space.project_to_feasible(
                 action_idx_raw,
                 max_quantity=50,
                 max_notional=max_notional,
             )
 
-            ts = state.timestamps[state.ptr]
             delivery_time = ts + pd.Timedelta(hours=24)
 
             if delivery_time not in state.raw_state_data.index:
@@ -147,7 +120,7 @@ def evaluate_saved_policy(
             cumulative_reward += float(reward)
 
             next_obs, _, done, _ = state.step()
-            state_key = _state_to_key(next_obs)
+            state_key = state_vec_to_key(next_obs)
             step_counter += 1
             if step_counter >= state.window_size:
                 done = True

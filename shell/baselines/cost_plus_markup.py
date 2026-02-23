@@ -1,7 +1,6 @@
 from dataclasses import dataclass
-from typing import Optional
 from shell.action_space import ActionSpace
-from shell.evaluations.policy_types import PolicyObs
+from shell.agent_interface import Observation
 
 @dataclass
 class CostPlusMarkupPolicy:
@@ -16,7 +15,7 @@ class CostPlusMarkupPolicy:
     markup: float
     quantity_mw: float
 
-    def act(self, obs: PolicyObs | None = None) -> int:
+    def act(self, obs: Observation | None = None) -> int:
         _ = obs  # Unused
         price = float(self.marginal_cost + self.markup)
         qty = float(self.quantity_mw)
