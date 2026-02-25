@@ -22,6 +22,7 @@ from shell.linear_approximator import (
 from shell.market_model import MarketModel, MarketParams
 from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
 from shell.agent_interface import Observation
+from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
 
@@ -269,6 +270,19 @@ def save_plot(y: List[float], title: str, out_path: str) -> None:
     plt.savefig(out_path, dpi=200)
     plt.close()
 
+def save_plot_rewards(y: dict[List], title: str, out_path: str) -> None:
+    plt.figure()
+    for agent_type, rewards in y.items():
+        plt.plot(rewards, label=agent_type)
+    plt.title(title)
+    plt.xlabel("Episode")
+    plt.ylabel(title)
+    plt.legend()
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
 
 # -------------------------
 # The PoC training loop:
@@ -311,7 +325,8 @@ def run_poc(cfg: PoCConfig) -> None:
     fixed_start = all_episode_starts[0]
     episode_starts = [fixed_start] * cfg.n_episodes
 
-    rewards_ep: List[float] = []
+    rewards_ep_rl: List[float] = []
+    rewards_ep_baseline: List[float] = []
     mean_td_ep: List[float] = []
     delta_q_ep: List[float] = []
     entropy_ep: List[float] = []
@@ -334,11 +349,14 @@ def run_poc(cfg: PoCConfig) -> None:
         done = False
         step_counter = 0
 
-        cumulative_reward = 0.0
+        cumulative_reward_rl = 0.0
         td_errors: List[float] = []
         dq_accum = 0.0
         ent_accum = 0.0
         ent_count = 0
+
+        # Baseline
+        cumulative_reward_baseline = 0.0
 
         while not done:
             temp = get_episode_temperature(cfg, ep_idx)
@@ -387,7 +405,9 @@ def run_poc(cfg: PoCConfig) -> None:
                 tie_break_random=True,
             )
             rewards = list(out["rewards"])
+            print(rewards)
             r_rl = float(rewards[0])
+            r_baseline = float(rewards[1])
 
             q_before = None
             if isinstance(getattr(rl_agent, "Q", None), dict) and state_key in rl_agent.Q:
@@ -420,15 +440,19 @@ def run_poc(cfg: PoCConfig) -> None:
                 ent_accum += softmax_entropy(np.array(rl_agent.Q[state_key], dtype=float), temperature=temp)
                 ent_count += 1
 
-            cumulative_reward += r_rl
+            cumulative_reward_rl += r_rl
             state_key = next_state_key
             obs = next_obs
             step_counter += 1
 
+            # Baseline
+            cumulative_reward_baseline += r_baseline
+
             if step_counter >= state.window_size:
                 done = True
 
-        rewards_ep.append(float(cumulative_reward))
+        rewards_ep_rl.append(float(cumulative_reward_rl))
+        rewards_ep_baseline.append(float(cumulative_reward_baseline))
         mean_td_ep.append(float(np.mean(td_errors)) if len(td_errors) else float("nan"))
         delta_q_ep.append(float(dq_accum / max(step_counter, 1)))
         entropy_ep.append(float(ent_accum / max(ent_count, 1)) if ent_count else float("nan"))
@@ -437,7 +461,7 @@ def run_poc(cfg: PoCConfig) -> None:
             {
                 "episode": ep_idx,
                 "start_idx": int(start_idx),
-                "reward": float(cumulative_reward),
+                "reward": float(cumulative_reward_rl),
                 "mean_td_error": float(mean_td_ep[-1]),
                 "mean_delta_q": float(delta_q_ep[-1]),
                 "mean_entropy": float(entropy_ep[-1]),
@@ -446,17 +470,20 @@ def run_poc(cfg: PoCConfig) -> None:
         )
 
         if (ep_idx + 1) % 10 == 0:
-            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward={cumulative_reward:.3f}")
+            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward_rl={cumulative_reward_rl:.3f} | reward_rl={cumulative_reward_baseline:.3f}")
 
     # Save logs + artifacts
     df = pd.DataFrame(logs)
     df.to_csv(os.path.join(cfg.out_dir, "poc_logs.csv"), index=False)
 
+    # Create total rewards_epi
+    rewards_ep = {"RL Agent": rewards_ep_rl, "Baseline": rewards_ep_baseline}
+
     with open(os.path.join(cfg.out_dir, "poc_q_table.pkl"), "wb") as f:
         pickle.dump(rl_agent.Q, f)
 
     # 4 plots
-    save_plot(rewards_ep, "Episode Reward (RL vs Fixed Opponent)", os.path.join(cfg.out_dir, "01_reward.png"))
+    save_plot_rewards(rewards_ep, "Episode Reward (RL vs Fixed Opponent)", os.path.join(cfg.out_dir, "01_reward.png"))
     save_plot(mean_td_ep, "Mean TD Error (episode)", os.path.join(cfg.out_dir, "02_mean_td_error.png"))
     save_plot(delta_q_ep, "Mean |ΔQ| per step (episode)", os.path.join(cfg.out_dir, "03_delta_q.png"))
     save_plot(entropy_ep, "Policy Entropy (episode)", os.path.join(cfg.out_dir, "04_entropy.png"))
@@ -469,7 +496,7 @@ def run_poc(cfg: PoCConfig) -> None:
 
 if __name__ == "__main__":
     cfg = PoCConfig(
-        n_episodes=50,        
+        n_episodes=10,        
         seed=0,
         opponent_markup=0.10,  
         demand_scale=1.0,
