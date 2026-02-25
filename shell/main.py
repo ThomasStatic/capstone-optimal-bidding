@@ -642,8 +642,8 @@ def parse_args():
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
     
     # Policy-freeze / inertia options (disabled by default)
-    p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=False,
-                   help="Enable periodic policy freeze: hold policies fixed for K episodes while Q updates.")
+    p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable periodic policy freeze: hold policies fixed for K episodes while Q updates. (default: enabled)")
     p.add_argument("--policy_freeze_k", type=int, default=5,
                    help="Number of episodes to hold policies fixed between greedy policy updates.")
     p.add_argument("--policy_inertia_keep", type=float, default=0.9,
