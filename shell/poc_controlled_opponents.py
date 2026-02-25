@@ -21,6 +21,7 @@ from shell.linear_approximator import (
 )
 from shell.market_model import MarketModel, MarketParams
 from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
+from shell.baselines.historical_quantile import HistoricalQuantilePolicy
 from shell.agent_interface import Observation
 from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
 from shell.state_space import State
@@ -45,7 +46,9 @@ class PoCConfig:
     demand_scale: float = 1.0
     verbose: bool = False
 
-    opponent_markup: float = 0.10 
+    opponent_markup: float = 0.10
+
+    opponent_quantile: float = 0.7 
 
     temperature_mode: str = "fixed"
     temperature: float = 1.0
@@ -308,13 +311,21 @@ def run_poc(cfg: PoCConfig) -> None:
     if hasattr(rl_agent, "seed"):
         rl_agent.seed(cfg.seed)
 
-    # Controlled opponent baseline
+    # Controlled opponent baseline (Cost plus marketup)
     marginal_cost = float(market_model.params.marginal_cost)
     opponent_policy = CostPlusMarkupPolicy(
         action_space=action_space,
         marginal_cost=marginal_cost,
         markup=float(cfg.opponent_markup),
         quantity_mw=MAX_BID_QUANTITY_MW,
+    )
+
+    # Controlled opponent baseline (Quantile)
+    opponent_policy_quantile = HistoricalQuantilePolicy(
+        action_space = action_space,
+        lmp_df= lmp_df,
+        quantile = float(cfg.opponent_quantile),
+        quantity_mw = MAX_BID_QUANTITY_MW
     )
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
@@ -326,7 +337,11 @@ def run_poc(cfg: PoCConfig) -> None:
     episode_starts = [fixed_start] * cfg.n_episodes
 
     rewards_ep_rl: List[float] = []
-    rewards_ep_baseline: List[float] = []
+    # baselines
+    rewards_ep_costplus: List[float] = []
+    rewards_ep_quantile: List[float] = []
+
+
     mean_td_ep: List[float] = []
     delta_q_ep: List[float] = []
     entropy_ep: List[float] = []
@@ -356,7 +371,8 @@ def run_poc(cfg: PoCConfig) -> None:
         ent_count = 0
 
         # Baseline
-        cumulative_reward_baseline = 0.0
+        cumulative_reward_costplus = 0.0
+        cumulative_reward_quantile = 0.0
 
         while not done:
             temp = get_episode_temperature(cfg, ep_idx)
@@ -373,12 +389,19 @@ def run_poc(cfg: PoCConfig) -> None:
                 raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
             )
 
+            # Baseline - cost plus markup
             opp_raw_idx = int(opponent_policy.act(step_obs))
             opp_idx, _ = action_space.project_to_feasible(
                 opp_raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
             )
 
-            action_indices = [int(rl_idx), int(opp_idx)]
+
+            # Baseline - quantile
+            opp_raw_idx_quant = int(opponent_policy_quantile.act(step_obs))
+            opp_idx_quant, _ = action_space.project_to_feasible(
+                opp_raw_idx_quant, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
+            )
+            action_indices = [int(rl_idx), int(opp_idx), int(opp_idx_quant)]
 
             delivery_time = ts + pd.Timedelta(hours=24)
             if delivery_time not in state.raw_state_data.index:
@@ -405,9 +428,9 @@ def run_poc(cfg: PoCConfig) -> None:
                 tie_break_random=True,
             )
             rewards = list(out["rewards"])
-            print(rewards)
             r_rl = float(rewards[0])
-            r_baseline = float(rewards[1])
+            r_costplus = float(rewards[1])
+            r_quantile = float(rewards[2])
 
             q_before = None
             if isinstance(getattr(rl_agent, "Q", None), dict) and state_key in rl_agent.Q:
@@ -445,14 +468,17 @@ def run_poc(cfg: PoCConfig) -> None:
             obs = next_obs
             step_counter += 1
 
-            # Baseline
-            cumulative_reward_baseline += r_baseline
+            # Baseline2
+            cumulative_reward_costplus += r_costplus
+            cumulative_reward_quantile += r_quantile
+
 
             if step_counter >= state.window_size:
                 done = True
 
         rewards_ep_rl.append(float(cumulative_reward_rl))
-        rewards_ep_baseline.append(float(cumulative_reward_baseline))
+        rewards_ep_costplus.append(float(cumulative_reward_costplus))
+        rewards_ep_quantile.append(float(cumulative_reward_quantile))
         mean_td_ep.append(float(np.mean(td_errors)) if len(td_errors) else float("nan"))
         delta_q_ep.append(float(dq_accum / max(step_counter, 1)))
         entropy_ep.append(float(ent_accum / max(ent_count, 1)) if ent_count else float("nan"))
@@ -470,20 +496,20 @@ def run_poc(cfg: PoCConfig) -> None:
         )
 
         if (ep_idx + 1) % 10 == 0:
-            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward_rl={cumulative_reward_rl:.3f} | reward_rl={cumulative_reward_baseline:.3f}")
+            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward_rl={cumulative_reward_rl:.3f} | reward_costplus={cumulative_reward_costplus:.3f} | reward_quantile={cumulative_reward_quantile:.3f}")
 
     # Save logs + artifacts
     df = pd.DataFrame(logs)
     df.to_csv(os.path.join(cfg.out_dir, "poc_logs.csv"), index=False)
 
     # Create total rewards_epi
-    rewards_ep = {"RL Agent": rewards_ep_rl, "Baseline": rewards_ep_baseline}
+    rewards_ep = {"RL Agent": rewards_ep_rl, "Cost Plus": rewards_ep_costplus, "Quantile": rewards_ep_quantile}
 
     with open(os.path.join(cfg.out_dir, "poc_q_table.pkl"), "wb") as f:
         pickle.dump(rl_agent.Q, f)
 
     # 4 plots
-    save_plot_rewards(rewards_ep, "Episode Reward (RL vs Fixed Opponent)", os.path.join(cfg.out_dir, "01_reward.png"))
+    save_plot_rewards(rewards_ep, "Episode Rewards across agents", os.path.join(cfg.out_dir, "01_reward.png"))
     save_plot(mean_td_ep, "Mean TD Error (episode)", os.path.join(cfg.out_dir, "02_mean_td_error.png"))
     save_plot(delta_q_ep, "Mean |ΔQ| per step (episode)", os.path.join(cfg.out_dir, "03_delta_q.png"))
     save_plot(entropy_ep, "Policy Entropy (episode)", os.path.join(cfg.out_dir, "04_entropy.png"))
@@ -496,7 +522,7 @@ def run_poc(cfg: PoCConfig) -> None:
 
 if __name__ == "__main__":
     cfg = PoCConfig(
-        n_episodes=10,        
+        n_episodes=300,        
         seed=0,
         opponent_markup=0.10,  
         demand_scale=1.0,
