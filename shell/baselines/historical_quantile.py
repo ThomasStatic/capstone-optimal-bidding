@@ -1,8 +1,7 @@
 from dataclasses import dataclass
-from typing import Optional
 import pandas as pd
 from shell.action_space import ActionSpace
-from shell.evaluations.policy_types import PolicyObs
+from shell.agent_interface import Observation
 from shell.linear_approximator import PRICE_COL
 
 @dataclass
@@ -42,7 +41,7 @@ class HistoricalQuantilePolicy:
         # fallback if a context is missing
         self.fallback_price = float(df[PRICE_COL].quantile(self.quantile))
 
-    def act(self, obs: PolicyObs | None = None) -> int:
+    def act(self, obs: Observation | None = None) -> int:
         """
         obs must contain: obs["timestamp"] (current ts), used to lookup hour/dow.
         """

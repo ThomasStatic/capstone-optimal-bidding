@@ -1,12 +1,11 @@
-
 from dataclasses import dataclass, field
-from typing import Dict, Hashable, Tuple, Optional, Sequence, TypeAlias, Union
+from typing import Any, Dict, Optional, TypeAlias, Union
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 
-# Our State object currently produces Pandas row of discrete values, so needs to be converted to a hashable type
-StateKey: TypeAlias = tuple[int, ...]  
+from shell.agent_interface import Observation, StateKey
+
 StateVec = ArrayLike  # e.g., np.ndarray or pd.Series
 
 @dataclass
@@ -104,7 +103,7 @@ class TabularQLearningAgent:
         exp_q = np.exp(scaled)
         return exp_q / np.sum(exp_q)
     
-    def select_softmax_action(self, state_key, temperature=None):
+    def select_softmax_action(self, state_key: StateKey, temperature: float | None = None) -> int:
         """
         Select an action via softmax.
         - If temperature is None, we use the agent's q-gap adaptive temperature.
@@ -114,7 +113,47 @@ class TabularQLearningAgent:
         action = self._rng.choice(self.num_actions, p=action_probs)
         return int(action)
 
-        
+    def act(self, obs: Observation) -> int:
+        """
+        Standardized interface: return action index from unified observation.
+        Uses state_key or state_vec from obs; temperature from obs or adaptive.
+        """
+        state_key = obs.get("state_key")
+        if state_key is None and "state_vec" in obs:
+            state_key = self.state_to_key(obs["state_vec"])
+        if state_key is None:
+            raise ValueError("act(obs) requires obs['state_key'] or obs['state_vec']")
+        temperature = obs.get("temperature")
+        return self.select_softmax_action(state_key, temperature=temperature)
+
+    def update(
+        self,
+        obs: Observation,
+        action: int,
+        reward: float,
+        next_obs: Observation | None,
+        done: bool,
+    ) -> None:
+        """
+        Standardized learning update. Extracts state_key from obs/next_obs and calls update_q_table.
+        """
+        state_key = obs.get("state_key")
+        if state_key is None and "state_vec" in obs:
+            state_key = self.state_to_key(obs["state_vec"])
+        next_state_key: StateKey | None = None
+        if next_obs is not None:
+            next_state_key = next_obs.get("state_key")
+            if next_state_key is None and "state_vec" in next_obs:
+                next_state_key = self.state_to_key(next_obs["state_vec"])
+        if state_key is None:
+            raise ValueError("update(obs, ...) requires obs['state_key'] or obs['state_vec']")
+        self.update_q_table(state_key, action, reward, next_state_key or state_key, done)
+
+    def extract_policy(self, **kwargs: Any) -> Dict[StateKey, int]:
+        """Return deterministic policy (state_key -> action) for saving/evaluation."""
+        temperature = float(kwargs.get("temperature", 1.0))
+        return self.extract_softmax_policy(temperature=temperature)
+
     def update_q_table(self, state_key: StateKey, action: int, reward: float, next_state_key: StateKey, done: bool) -> None:
         self._ensure_state(state_key)
         quality_current = self.Q[state_key][action]
