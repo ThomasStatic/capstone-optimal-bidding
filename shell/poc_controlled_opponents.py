@@ -46,6 +46,8 @@ class PoCConfig:
     demand_scale: float = 1.0
     verbose: bool = False
 
+    n_agents: int = 1
+
     opponent_markup: float = 0.10
 
     opponent_quantile: float = 0.7 
@@ -243,6 +245,16 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame, *, verbose: bool) -
     market_model = MarketModel(action_space, market_params)
     return state, action_space, market_model
 
+## Wrap class for baseline agent
+class BaselineAgent:
+    def __init__(self, policy, name: str):
+        self.policy = policy
+        self.name = name
+        self.Q = {}
+    def act(self, obs):                        return int(self.policy.act(obs))
+    def state_to_key(self, obs):               return obs
+    def update_q_table(self, *args, **kwargs):  pass
+    def extract_policy(self, **kwargs):         return {}
 
 # Metrics helpers
 
@@ -311,30 +323,23 @@ def run_poc(cfg: PoCConfig) -> None:
     if hasattr(rl_agent, "seed"):
         rl_agent.seed(cfg.seed)
 
-    # Controlled opponent baseline (Cost plus marketup)
+    # Replace opponent_policy and opponent_policy_quantile with:
     marginal_cost = float(market_model.params.marginal_cost)
-    opponent_policy = CostPlusMarkupPolicy(
-        action_space=action_space,
-        marginal_cost=marginal_cost,
-        markup=float(cfg.opponent_markup),
-        quantity_mw=MAX_BID_QUANTITY_MW,
-    )
-
-    # Controlled opponent baseline (Quantile)
-    opponent_policy_quantile = HistoricalQuantilePolicy(
-        action_space = action_space,
-        lmp_df= lmp_df,
-        quantile = float(cfg.opponent_quantile),
-        quantity_mw = MAX_BID_QUANTITY_MW
-    )
+    baselines = [
+        BaselineAgent(CostPlusMarkupPolicy(action_space=action_space, marginal_cost=marginal_cost,
+                    markup=float(cfg.opponent_markup), quantity_mw=MAX_BID_QUANTITY_MW), "cost_plus"),
+        BaselineAgent(HistoricalQuantilePolicy(action_space=action_space, lmp_df=lmp_df,
+                    quantile=float(cfg.opponent_quantile), quantity_mw=MAX_BID_QUANTITY_MW), "hist_quantile"),
+    ]
+    all_agents = [rl_agent] + baselines
+    metrics    = MetricsTracker(n_agents=3, action_space=action_space)
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been initialized")
 
     all_episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
 
-    fixed_start = all_episode_starts[0]
-    episode_starts = [fixed_start] * cfg.n_episodes
+    episode_starts = all_episode_starts[:cfg.n_episodes]
 
     rewards_ep_rl: List[float] = []
     # baselines
@@ -386,24 +391,17 @@ def run_poc(cfg: PoCConfig) -> None:
                 "temperature": temp,
             }
 
-            raw_idx = rl_agent.act(step_obs)
-            rl_idx, rl_clip = action_space.project_to_feasible(
-                raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
-            )
+            action_indices, clip_infos = [], []
+            for ag in all_agents:
+                aidx, clip_info = action_space.project_to_feasible(
+                    ag.act(step_obs), max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
+                )
+                action_indices.append(int(aidx))
+                clip_infos.append(clip_info)
 
-            # Baseline - cost plus markup
-            opp_raw_idx = int(opponent_policy.act(step_obs))
-            opp_idx, _ = action_space.project_to_feasible(
-                opp_raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
-            )
-
-
-            # Baseline - quantile
-            opp_raw_idx_quant = int(opponent_policy_quantile.act(step_obs))
-            opp_idx_quant, _ = action_space.project_to_feasible(
-                opp_raw_idx_quant, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
-            )
-            action_indices = [int(rl_idx), int(opp_idx), int(opp_idx_quant)]
+            # Unpack for the rest of the loop — everything below stays identical
+            rl_idx, rl_clip = action_indices[0], clip_infos[0]
+            opp_idx, opp_idx_quant = action_indices[1], action_indices[2]
 
             delivery_time = ts + pd.Timedelta(hours=24)
             if delivery_time not in state.raw_state_data.index:
@@ -472,7 +470,7 @@ def run_poc(cfg: PoCConfig) -> None:
                 rewards=[r_rl, r_costplus, r_quantile],
                 clearing_price=clearing_price, demand_mw=demand_mw,
                 rho=out["rho"],
-                clip_infos=[rl_clip, {}, {}],
+                clip_infos=clip_infos,
             )
 
             cumulative_reward_rl += r_rl
