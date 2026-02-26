@@ -32,13 +32,18 @@ class MetricsTracker:
     for reporting and PDF export.
     """
 
-    def __init__(self, n_agents: int, action_space=None):
+    def __init__(self, n_agents: int, agent_names = List[str], action_space=None):
         self.n_agents = n_agents
+        self.agent_names = agent_names
         self.action_space = action_space
         self._steps: List[StepRecord] = []
         self._episode_summaries: List[dict] = []
+        self._greedy_actions: dict[int, List[int]] = defaultdict(list)
 
         self._ep_rewards: dict[int, List[float]] = defaultdict(list)
+
+    def log_greedy_actions(self, agent_idx: int, greedy_action: int) -> None:
+        self._greedy_actions[agent_idx].append(greedy_action)
 
     def log_step(
         self,
@@ -102,17 +107,23 @@ class MetricsTracker:
             agent_actions = [s.action_indices[i] for s in ep_steps if i < len(s.action_indices)]
             agent_clipped = [s.clipped[i] for s in ep_steps if i < len(s.clipped)]
 
-            summary[f"agent_{i}_total_reward"] = float(np.sum(agent_rewards))
-            summary[f"agent_{i}_mean_reward"] = float(np.mean(agent_rewards))
-            summary[f"agent_{i}_std_reward"] = float(np.std(agent_rewards))
-            summary[f"agent_{i}_clip_rate"] = float(np.mean(agent_clipped))
-            # summary[f"agent_{i}_mean_action_idx"] = float(np.mean(agent_actions))
+            summary[f"agent_{self.agent_names[i]}_total_reward"] = float(np.sum(agent_rewards))
+            summary[f"agent_{self.agent_names[i]}_mean_reward"] = float(np.mean(agent_rewards))
+            summary[f"agent_{self.agent_names[i]}_std_reward"] = float(np.std(agent_rewards))
+            summary[f"agent_{self.agent_names[i]}_clip_rate"] = float(np.mean(agent_clipped))
             
-            ## Entropy Calculation
+            ## Action Entropy Calculation
             raw_entropy = self._entropy(agent_actions)
             max_entropy = math.log(self.action_space.n_actions) if self.action_space is not None else 1.0
             normalised  = raw_entropy / max_entropy if max_entropy > 0 else 0.0
-            summary[f"agent_{i}_action_entropy"] = round(normalised, 4)
+            summary[f"agent_{self.agent_names[i]}_action_entropy"] = round(normalised, 4)
+
+            # After existing action_entropy line
+            greedy_actions = self._greedy_actions.get(i, [])
+            if greedy_actions:
+                raw_greedy = self._entropy(greedy_actions)
+                normalised_greedy = raw_greedy / max_entropy if max_entropy > 0 else 0.0
+                summary[f"agent_{self.agent_names[i]}_greedy_entropy"] = round(normalised_greedy, 4)
 
             # Produce bid-action space distributions
             if self.action_space is not None:
@@ -123,14 +134,15 @@ class MetricsTracker:
                         bid_p, bid_q = self.action_space.decode_to_values(aidx)
                         bid_prices.append(bid_p)
                         bid_qtys.append(bid_q)
-                    summary[f"agent_{i}_mean_bid_price"] = float(np.mean(bid_prices))
-                    summary[f"agent_{i}_mean_bid_qty_mw"] = float(np.mean(bid_qtys))
+                    summary[f"agent_{self.agent_names[i]}_mean_bid_price"] = float(np.mean(bid_prices))
+                    summary[f"agent_{self.agent_names[i]}_mean_bid_qty_mw"] = float(np.mean(bid_qtys))
                 except Exception:
                     pass
 
         self._episode_summaries.append(summary)
 
         # Reset episode metrics
+        self._greedy_actions.clear()
         self._ep_rewards.clear()
         
     def step_df(self) -> pd.DataFrame:
@@ -149,9 +161,9 @@ class MetricsTracker:
                 "rho": s.rho,
             }
             for i in range(self.n_agents):
-                base[f"agent_{i}_reward"] = s.rewards[i] if i < len(s.rewards) else np.nan
-                base[f"agent_{i}_action_idx"] = s.action_indices[i] if i < len(s.action_indices) else np.nan
-                base[f"agent_{i}_clipped"] = s.clipped[i] if i < len(s.clipped) else False
+                base[f"agent_{self.agent_names[i]}_reward"] = s.rewards[i] if i < len(s.rewards) else np.nan
+                base[f"agent_{self.agent_names[i]}_action_idx"] = s.action_indices[i] if i < len(s.action_indices) else np.nan
+                base[f"agent_{self.agent_names[i]}_clipped"] = s.clipped[i] if i < len(s.clipped) else False
             rows.append(base)
 
         return pd.DataFrame(rows)
@@ -169,11 +181,11 @@ class MetricsTracker:
 
         records = []
         for i in range(self.n_agents):
-            cols = {k: v for k, v in edf.items() if k.startswith(f"agent_{i}_")}
+            cols = {k: v for k, v in edf.items() if k.startswith(f"agent_{self.agent_names[i]}_")}
             if not cols:
                 continue
             row = {"agent": i}
-            row.update({k.replace(f"agent_{i}_", ""): float(np.mean(v)) for k, v in cols.items()})
+            row.update({k.replace(f"agent_{self.agent_names[i]}_", ""): float(np.mean(v)) for k, v in cols.items()})
             records.append(row)
 
         return pd.DataFrame(records).set_index("agent")
@@ -188,7 +200,7 @@ class MetricsTracker:
 
         frames = []
         for i in range(self.n_agents):
-            col = f"agent_{i}_action_idx"
+            col = f"agent_{self.agent_names[i]}_action_idx"
             if col not in sdf.columns:
                 continue
             counts = sdf[col].dropna().astype(int).value_counts().sort_index()
@@ -207,12 +219,12 @@ class MetricsTracker:
         records = []
 
         for i in range(self.n_agents):
-            reward_col = f"agent_{i}_total_reward"
+            reward_col = f"agent_{self.agent_names[i]}_total_reward"
             if reward_col not in edf.columns:
                 continue
 
-            all_reward_cols = [f"agent_{j}_total_reward" for j in range(self.n_agents)
-                            if f"agent_{j}_total_reward" in edf.columns]
+            all_reward_cols = [f"agent_{self.agent_names[j]}_total_reward" for j in range(self.n_agents)
+                            if f"agent_{self.agent_names[j]}_total_reward" in edf.columns]
             total_rewards = edf[all_reward_cols].sum(axis=1)
 
             profit_share = (edf[reward_col] / total_rewards.replace(0, float("nan"))).mean()
@@ -222,7 +234,7 @@ class MetricsTracker:
             # Market spread, grabbing all spreads, mean spread, standard deviation of spread, and the bid efficiency.
             mean_spread = std_spread = bid_efficiency = None
             if self.action_space is not None and not sdf.empty:
-                action_col = f"agent_{i}_action_idx"
+                action_col = f"agent_{self.agent_names[i]}_action_idx"
                 if action_col in sdf.columns:
                     try:
                         bid_prices = sdf[action_col].dropna().astype(int).apply(
@@ -236,7 +248,7 @@ class MetricsTracker:
                         pass
 
             records.append({
-                "agent":          i,
+                "agent":          self.agent_names[i],
                 "profit_share":   round(profit_share * 100, 2),
                 "win_rate":       round(win_rate * 100, 2),
                 "price_impact":   round(price_impact, 3),
@@ -248,23 +260,25 @@ class MetricsTracker:
         return pd.DataFrame(records).set_index("agent")
 
     def stability_df(self, window: int = 14) -> pd.DataFrame:
-        """Default Window: 14 Episodes"""
         edf = self.episode_summary_df()
         df  = pd.DataFrame(index=edf.index)
 
-        # Rolling Variance Calculation
         for i in range(self.n_agents):
-            col = f"agent_{i}_total_reward"
+            # Existing
+            col = f"agent_{self.agent_names[i]}_total_reward"
             if col in edf.columns:
-                df[f"agent_{i}_rolling_reward_var"] = (
+                df[f"agent_{self.agent_names[i]}_rolling_reward_var"] = (
                     edf[col].rolling(window, min_periods=1).var()
                 )
+            # Existing action entropy
+            ent_col = f"agent_{self.agent_names[i]}_action_entropy"
+            if ent_col in edf.columns:
+                df[f"agent_{self.agent_names[i]}_entropy"] = edf[ent_col]
 
-        # Policy entropy, which is already logged
-        for i in range(self.n_agents):
-            col = f"agent_{i}_action_entropy"
-            if col in edf.columns:
-                df[f"agent_{i}_entropy"] = edf[col]
+            # Add greedy entropy — true policy convergence signal
+            greedy_col = f"agent_{self.agent_names[i]}_greedy_entropy"
+            if greedy_col in edf.columns:
+                df[f"agent_{self.agent_names[i]}_greedy_entropy"] = edf[greedy_col]
 
         return df
 
@@ -291,9 +305,9 @@ class MetricsTracker:
             "mean_demand_mw": float(edf["mean_demand_mw"].mean()),
         }
         for i in range(self.n_agents):
-            col = f"agent_{i}_total_reward"
+            col = f"agent_{self.agent_names[i]}_total_reward"
             if col in edf.columns:
-                out[f"agent_{i}_mean_total_reward"] = float(edf[col].mean())
+                out[f"agent_{self.agent_names[i]}_mean_total_reward"] = float(edf[col].mean())
         return out
     
 def _agent_color(i: int, n_agents: int) -> str:
@@ -335,10 +349,10 @@ def plot_rewards(metrics, path="episode_rewards.png"):
     fig, ax = plt.subplots(figsize=(9, 4))
 
     for i in range(metrics.n_agents):
-        col = f"agent_{i}_total_reward"
+        col = f"agent_{metrics.agent_names[i]}_total_reward"
         color = _agent_color(i, metrics.n_agents)
         if col in edf.columns:
-            ax.plot(edf.index, edf[col], label=f"Agent {i}",
+            ax.plot(edf.index, edf[col], label=f"{metrics.agent_names[i]}",
                     color=color, linewidth=2)
 
     ax.set(title="Reward per Episode", xlabel="Episode", ylabel="Total Reward")
@@ -392,7 +406,7 @@ def plot_bid_distributions(metrics, path="bid_distributions.png"):
         if sub is not None and not sub.empty:
             ax.bar(sub["action_idx"], sub["count"],
                    color=color, alpha=0.85)
-        ax.set(title=f"Agent {i} — Bid Distribution",
+        ax.set(title=f"{metrics.agent_names[i]} — Bid Distribution",
                xlabel="Action Index", ylabel="Count")
         ax.grid(alpha=0.3, axis="y")
 
@@ -418,43 +432,38 @@ def export_stability_csv(metrics, path="stability.csv"):
 
 
 def plot_stability(metrics, path="stability.png"):
-    """Two subplots: rolling reward variance and entropy over episodes."""
     df  = metrics.stability_df()
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
 
     for i in range(metrics.n_agents):
-        var_col = f"agent_{i}_rolling_reward_var"
-        ent_col = f"agent_{i}_entropy"
-        color = _agent_color(i, metrics.n_agents)
+        color   = _agent_color(i, metrics.n_agents)
+        var_col = f"agent_{metrics.agent_names[i]}_rolling_reward_var"
+        ent_col = f"agent_{metrics.agent_names[i]}_entropy"
+        g_col   = f"agent_{metrics.agent_names[i]}_greedy_entropy"
 
         if var_col in df.columns:
-            ax1.plot(df.index, df[var_col], label=f"Agent {i}",
+            ax1.plot(df.index, df[var_col], label=metrics.agent_names[i],
                      color=color, linewidth=2)
         if ent_col in df.columns:
-            ax2.plot(df.index, df[ent_col], label=f"Agent {i}",
-                     color=color, linewidth=2)
+            ax2.plot(df.index, df[ent_col], color=color, linewidth=1.5,
+                     alpha=0.4, linestyle="--")   # faded — includes exploration noise
+        if g_col in df.columns:
+            ax3.plot(df.index, df[g_col], label=metrics.agent_names[i],
+                     color=color, linewidth=2)    # solid — true policy signal
 
     ax1.set(title="Rolling Reward Variance (window=14)", ylabel="Variance")
-    ax2.set(title="Policy Entropy per Episode", xlabel="Episode", ylabel="Entropy")
-    ax1.legend(
-        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
-        fontsize=7,
-        loc="upper right",
-        framealpha=0.5,
-    )
-    ax2.legend(
-        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
-        fontsize=7,
-        loc="upper right",
-        framealpha=0.5,
-    )
-    ax2.axhline(0.2, color="green", linestyle="--", linewidth=1, alpha=0.6, label="Converged threshold")
-    ax2.axhline(0.8, color="red",   linestyle="--", linewidth=1, alpha=0.6, label="High exploration")
-    ax2.set(ylabel="Normalised Entropy (0=converged, 1=random)")
+    ax2.set(title="Action Entropy (includes exploration)", ylabel="Entropy")
+    ax3.set(title="Greedy Policy Entropy",
+            xlabel="Episode", ylabel="Normalised Entropy")
+
+    for ax in (ax1, ax2, ax3):
+        ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
+                  loc="upper right", framealpha=0.5)
+        ax.grid(alpha=0.3)
+
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
-    print(f"Saved stability plot -> {path}")
     return path
 
 def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metrics", "Multi_Agent")):

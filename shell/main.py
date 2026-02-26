@@ -365,7 +365,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     episode_logs: list[dict] = []
 
     # Initialize metrics tracker module for multi-agent environment.
-    metrics = MetricsTracker(n_agents=n_agents, action_space=action_space)
+    metrics = MetricsTracker(n_agents=n_agents, agent_names = [f"RL_Agent_{i}" for i in range(n_agents)], action_space=action_space)
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")

@@ -1,0 +1,10 @@
+agent,profit_share,win_rate,price_impact,mean_spread,spread_std,bid_efficiency
+RL_Agent_0,8.75,0.0,0.905,13.22,86.88,36.0
+RL_Agent_1,11.68,9.5,0.883,-8.97,22.99,29.1
+RL_Agent_2,12.24,0.5,0.94,1.82,56.16,36.3
+RL_Agent_3,11.6,0.0,0.936,5.17,66.09,38.1
+RL_Agent_4,9.68,0.0,0.933,3.09,66.92,29.7
+RL_Agent_5,10.45,0.0,0.897,20.67,83.19,48.8
+RL_Agent_6,12.03,15.5,0.919,2.3,63.96,34.8
+Cost Plus Markup Baseline Agent,14.72,74.5,0.95,3.42,23.62,70.8
+Quantile Baseline Agent,8.84,0.0,0.858,39.6,88.06,74.5
