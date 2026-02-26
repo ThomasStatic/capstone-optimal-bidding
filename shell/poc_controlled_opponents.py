@@ -341,6 +341,8 @@ def run_poc(cfg: PoCConfig) -> None:
     rewards_ep_costplus: List[float] = []
     rewards_ep_quantile: List[float] = []
 
+    # metrics
+    metrics = MetricsTracker(n_agents=3, action_space=action_space)
 
     mean_td_ep: List[float] = []
     delta_q_ep: List[float] = []
@@ -463,6 +465,16 @@ def run_poc(cfg: PoCConfig) -> None:
                 ent_accum += softmax_entropy(np.array(rl_agent.Q[state_key], dtype=float), temperature=temp)
                 ent_count += 1
 
+            # Metrics logging
+            metrics.log_step(
+                episode=ep_idx, step=step_counter, timestamp=ts,
+                action_indices=[int(rl_idx), int(opp_idx), int(opp_idx_quant)],
+                rewards=[r_rl, r_costplus, r_quantile],
+                clearing_price=clearing_price, demand_mw=demand_mw,
+                rho=out["rho"],
+                clip_infos=[rl_clip, {}, {}],
+            )
+
             cumulative_reward_rl += r_rl
             state_key = next_state_key
             obs = next_obs
@@ -495,6 +507,9 @@ def run_poc(cfg: PoCConfig) -> None:
             }
         )
 
+        # At the end of each episode
+        metrics.close_episode(ep_idx)   
+
         if (ep_idx + 1) % 10 == 0:
             print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward_rl={cumulative_reward_rl:.3f} | reward_costplus={cumulative_reward_costplus:.3f} | reward_quantile={cumulative_reward_quantile:.3f}")
 
@@ -504,6 +519,9 @@ def run_poc(cfg: PoCConfig) -> None:
 
     # Create total rewards_epi
     rewards_ep = {"RL Agent": rewards_ep_rl, "Cost Plus": rewards_ep_costplus, "Quantile": rewards_ep_quantile}
+
+    # generate metric level-plots
+    export_multi_agent_metrics(metrics, out_dir=cfg.out_dir)
 
     with open(os.path.join(cfg.out_dir, "poc_q_table.pkl"), "wb") as f:
         pickle.dump(rl_agent.Q, f)
