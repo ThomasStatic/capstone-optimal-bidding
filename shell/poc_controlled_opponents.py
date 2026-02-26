@@ -21,7 +21,9 @@ from shell.linear_approximator import (
 )
 from shell.market_model import MarketModel, MarketParams
 from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
+from shell.baselines.historical_quantile import HistoricalQuantilePolicy
 from shell.agent_interface import Observation
+from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
 
@@ -44,12 +46,20 @@ class PoCConfig:
     demand_scale: float = 1.0
     verbose: bool = False
 
-    opponent_markup: float = 0.10 
+    n_agents: int = 1
+
+    opponent_markup: float = 0.10
+
+    opponent_quantile: float = 0.7 
 
     temperature_mode: str = "fixed"
     temperature: float = 1.0
     temperature_min: float = 0.1
     temperature_decay: float = 0.995
+
+    policy_freeze_enabled: bool = True
+    policy_freeze_k: int = 10
+    policy_inertia_keep: float = 0.9
 
     max_notional_q: float = 0.95
     max_drawdown: float = float("inf") 
@@ -239,6 +249,16 @@ def build_world(load_df: pd.DataFrame, lmp_df: pd.DataFrame, *, verbose: bool) -
     market_model = MarketModel(action_space, market_params)
     return state, action_space, market_model
 
+## Wrap class for baseline agent
+class BaselineAgent:
+    def __init__(self, policy, name: str):
+        self.policy = policy
+        self.name = name
+        self.Q = {}
+    def act(self, obs):                        return int(self.policy.act(obs))
+    def state_to_key(self, obs):               return obs
+    def update_q_table(self, *args, **kwargs):  pass
+    def extract_policy(self, **kwargs):         return {}
 
 # Metrics helpers
 
@@ -269,6 +289,19 @@ def save_plot(y: List[float], title: str, out_path: str) -> None:
     plt.savefig(out_path, dpi=200)
     plt.close()
 
+def save_plot_rewards(y: dict[List], title: str, out_path: str) -> None:
+    plt.figure()
+    for agent_type, rewards in y.items():
+        plt.plot(rewards, label=agent_type)
+    plt.title(title)
+    plt.xlabel("Episode")
+    plt.ylabel(title)
+    plt.legend()
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
 
 # -------------------------
 # The PoC training loop:
@@ -289,36 +322,66 @@ def run_poc(cfg: PoCConfig) -> None:
     price_q = float(lmp_df[PRICE_COL].abs().quantile(cfg.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
-    # RL agent (single)
-    rl_agent = TabularQLearningAgent(num_actions=action_space.n_actions)
-    if hasattr(rl_agent, "seed"):
-        rl_agent.seed(cfg.seed)
+    # RL agent (multiple)
+    rl_agents = [TabularQLearningAgent(num_actions=action_space.n_actions) for _ in range(cfg.n_agents)]
+    for i, ag in enumerate(rl_agents):
+        if hasattr(ag, "seed"):
+            ag.seed(cfg.seed + i)
 
-    # Controlled opponent baseline
+    # Replace opponent_policy and opponent_policy_quantile with:
     marginal_cost = float(market_model.params.marginal_cost)
-    opponent_policy = CostPlusMarkupPolicy(
-        action_space=action_space,
-        marginal_cost=marginal_cost,
-        markup=float(cfg.opponent_markup),
-        quantity_mw=MAX_BID_QUANTITY_MW,
-    )
+    baselines = [
+        BaselineAgent(CostPlusMarkupPolicy(action_space=action_space, marginal_cost=marginal_cost,
+                    markup=float(marginal_cost * (1.0 + cfg.opponent_markup)), quantity_mw=MAX_BID_QUANTITY_MW), "cost_plus"),
+        BaselineAgent(HistoricalQuantilePolicy(action_space=action_space, lmp_df=lmp_df,
+                    quantile=float(cfg.opponent_quantile), quantity_mw=MAX_BID_QUANTITY_MW), "hist_quantile"),
+    ]
+    all_agents = rl_agents + baselines
+    agent_names = [f"RL_Agent_{i}" for i in range(len(rl_agents))] + ["Cost Plus Markup Baseline Agent", "Quantile Baseline Agent"]
 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been initialized")
 
     all_episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
 
-    fixed_start = all_episode_starts[0]
-    episode_starts = [fixed_start] * cfg.n_episodes
+    episode_starts = all_episode_starts[:cfg.n_episodes]
 
-    rewards_ep: List[float] = []
+    rewards_ep_rl: List[float] = []
+    # baselines
+    rewards_ep_costplus: List[float] = []
+    rewards_ep_quantile: List[float] = []
+
+    # metrics
+    metrics = MetricsTracker(n_agents=len(all_agents), agent_names=agent_names, action_space=action_space)
+
     mean_td_ep: List[float] = []
     delta_q_ep: List[float] = []
     entropy_ep: List[float] = []
 
-    logs: List[Dict[str, Any]] = []
+    # logs: List[Dict[str, Any]] = []
+
+    rng = np.random.default_rng(cfg.seed)
+    agent_policies: List[dict] = [{} for _ in rl_agents]
 
     for ep_idx, start_idx in enumerate(episode_starts):
+        if cfg.policy_freeze_enabled and cfg.policy_freeze_k > 0 and (ep_idx % cfg.policy_freeze_k) == 0:
+            for i, ag in enumerate(rl_agents):
+                new_pol = ag.extract_policy(temperature=1e-6)
+                old_pol = agent_policies[i]
+                merged = {}
+                for s in set(old_pol) | set(new_pol):
+                    old_a, new_a = old_pol.get(s), new_pol.get(s)
+                    if old_a is None:               merged[s] = new_a
+                    elif new_a is None:             merged[s] = old_a
+                    elif old_a == new_a:            merged[s] = new_a
+                    elif rng.random() < cfg.policy_inertia_keep: merged[s] = old_a
+                    else:                           merged[s] = new_a
+                agent_policies[i] = merged
+                if cfg.verbose:
+                    frozen_states = len(merged)
+                    q_states = len(ag.Q)
+                    coverage = frozen_states / max(q_states, 1) * 100
+                    print(f"  [Freeze ep={ep_idx}] Agent {i}: frozen_states={frozen_states} | q_states={q_states} | coverage={coverage:.1f}%")
         state.episode_start = start_idx
         episode_start_ts = state.raw_state_data.index[start_idx]
 
@@ -329,16 +392,20 @@ def run_poc(cfg: PoCConfig) -> None:
 
         state.apply()
         obs = state.reset(new_episode=False)
-        state_key = rl_agent.state_to_key(obs)
+        state_key = rl_agents[0].state_to_key(obs)
 
         done = False
         step_counter = 0
 
-        cumulative_reward = 0.0
+        cumulative_reward_rl = 0.0
         td_errors: List[float] = []
         dq_accum = 0.0
         ent_accum = 0.0
         ent_count = 0
+
+        # Baseline
+        cumulative_reward_costplus = 0.0
+        cumulative_reward_quantile = 0.0
 
         while not done:
             temp = get_episode_temperature(cfg, ep_idx)
@@ -350,17 +417,19 @@ def run_poc(cfg: PoCConfig) -> None:
                 "temperature": temp,
             }
 
-            raw_idx = rl_agent.act(step_obs)
-            rl_idx, rl_clip = action_space.project_to_feasible(
-                raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
-            )
-
-            opp_raw_idx = int(opponent_policy.act(step_obs))
-            opp_idx, _ = action_space.project_to_feasible(
-                opp_raw_idx, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
-            )
-
-            action_indices = [int(rl_idx), int(opp_idx)]
+            action_indices, clip_infos = [], []
+            for j, ag in enumerate(all_agents):
+                if cfg.policy_freeze_enabled and j < len(rl_agents):
+                    # Use frozen policy if state is known, else fall back to softmax
+                    frozen_action = agent_policies[j].get(state_key)
+                    raw = frozen_action if frozen_action is not None else ag.act(step_obs)
+                else:
+                    raw = ag.act(step_obs)
+                aidx, clip_info = action_space.project_to_feasible(
+                    raw, max_quantity=MAX_BID_QUANTITY_MW, max_notional=max_notional
+                )
+                action_indices.append(int(aidx))
+                clip_infos.append(clip_info)
 
             delivery_time = ts + pd.Timedelta(hours=24)
             if delivery_time not in state.raw_state_data.index:
@@ -387,92 +456,128 @@ def run_poc(cfg: PoCConfig) -> None:
                 tie_break_random=True,
             )
             rewards = list(out["rewards"])
-            r_rl = float(rewards[0])
+            r_rl = float(np.max(rewards[:cfg.n_agents]))
+            r_costplus = float(rewards[cfg.n_agents])
+            r_quantile = float(rewards[cfg.n_agents + 1])
 
-            q_before = None
-            if isinstance(getattr(rl_agent, "Q", None), dict) and state_key in rl_agent.Q:
-                q_before = np.array(rl_agent.Q[state_key], dtype=float)
+            q_snapshots = {i: np.array(ag.Q[state_key], dtype=float)
+               for i, ag in enumerate(rl_agents) if state_key in ag.Q}
 
             next_obs, _, done, info = state.step()
-            next_state_key = rl_agent.state_to_key(next_obs)
-            next_step_obs: Observation = {
-                "timestamp": state.timestamps[state.ptr],
-                "state_key": next_state_key,
-            }
+            next_state_key = rl_agents[0].state_to_key(next_obs)
 
-            rl_agent.update(step_obs, int(rl_idx), r_rl, next_step_obs, done)
+            for i, ag in enumerate(rl_agents):
+                ag.update_q_table(state_key, action_indices[i], rewards[i], next_state_key, done)
+                if i in q_snapshots and state_key in ag.Q:
+                    dq_accum += float(np.mean(np.abs(np.array(ag.Q[state_key], dtype=float) - q_snapshots[i])))
+                    greedy_action = int(np.argmax(ag.Q[state_key]))
+                if state_key in ag.Q:
+                    ent_accum += softmax_entropy(np.array(ag.Q[state_key], dtype=float), temperature=temp)
+                    ent_count += 1
+                     # Greedy episode logging
+                    greedy_action = int(np.argmax(ag.Q[state_key]))
+                else:
+                    greedy_action = 0
 
-            if isinstance(info, dict) and "td_error" in info:
-                td_errors.append(float(info["td_error"]))
-            elif hasattr(rl_agent, "last_td_error"):
-                try:
-                    td_errors.append(float(getattr(rl_agent, "last_td_error")))
-                except Exception:
-                    pass
+                metrics.log_greedy_actions(i, greedy_action)
+                if hasattr(ag, "last_td_error"):
+                    try: td_errors.append(float(ag.last_td_error))
+                    except Exception: pass
 
-            # ΔQ (state-local)
-            if q_before is not None and state_key in rl_agent.Q:
-                q_after = np.array(rl_agent.Q[state_key], dtype=float)
-                dq_accum += float(np.mean(np.abs(q_after - q_before)))
+            # Metrics logging
+            metrics.log_step(
+                episode=ep_idx, step=step_counter, timestamp=ts,
+                action_indices=action_indices,
+                rewards=rewards,
+                clearing_price=clearing_price, demand_mw=demand_mw,
+                rho=out["rho"],
+                clip_infos=clip_infos,
+            )
 
-            # Entropy (state-local)
-            if state_key in getattr(rl_agent, "Q", {}):
-                ent_accum += softmax_entropy(np.array(rl_agent.Q[state_key], dtype=float), temperature=temp)
-                ent_count += 1
-
-            cumulative_reward += r_rl
+            cumulative_reward_rl += r_rl
             state_key = next_state_key
             obs = next_obs
             step_counter += 1
 
+            # Baseline2
+            cumulative_reward_costplus += r_costplus
+            cumulative_reward_quantile += r_quantile
+
+
             if step_counter >= state.window_size:
                 done = True
 
-        rewards_ep.append(float(cumulative_reward))
+        rewards_ep_rl.append(float(cumulative_reward_rl))
+        rewards_ep_costplus.append(float(cumulative_reward_costplus))
+        rewards_ep_quantile.append(float(cumulative_reward_quantile))
         mean_td_ep.append(float(np.mean(td_errors)) if len(td_errors) else float("nan"))
         delta_q_ep.append(float(dq_accum / max(step_counter, 1)))
         entropy_ep.append(float(ent_accum / max(ent_count, 1)) if ent_count else float("nan"))
 
-        logs.append(
-            {
-                "episode": ep_idx,
-                "start_idx": int(start_idx),
-                "reward": float(cumulative_reward),
-                "mean_td_error": float(mean_td_ep[-1]),
-                "mean_delta_q": float(delta_q_ep[-1]),
-                "mean_entropy": float(entropy_ep[-1]),
-                "steps": int(step_counter),
-            }
-        )
+        # logs.append(
+        #     {
+        #         "episode": ep_idx,
+        #         "start_idx": int(start_idx),
+        #         "max_reward": float(cumulative_reward_rl),
+        #         "mean_td_error": float(mean_td_ep[-1]),
+        #         "mean_delta_q": float(delta_q_ep[-1]),
+        #         "mean_entropy": float(entropy_ep[-1]),
+        #         "steps": int(step_counter),
+        #     }
+        # )
+
+        # # At the end of each episode - close episode and log greedy actions
+        # for j, ag in enumerate(rl_agents):
+        #     if ag.Q:
+        #         greedy_per_state = [
+        #             int(np.argmax(q_vals))
+        #             for q_vals in ag.Q.values()
+        #             if np.any(q_vals != 0)   # only states with real updates
+        #         ]
+        #         for g in greedy_per_state:
+        #             metrics.log_greedy_actions(j, g)
+
+        if cfg.verbose:
+        # Diagnostics
+            if (ep_idx + 1) % 10 == 0:
+                for j, ag in enumerate(rl_agents):
+                    n_seen = sum(1 for q in ag.Q.values() if np.any(q != 0))
+                    greedy = [int(np.argmax(q)) for q in ag.Q.values() if np.any(q != 0)]
+                    unique = len(set(greedy))
+                    print(f"  Agent {j}: Q-states={len(ag.Q)} | seen={n_seen} | unique_greedy={unique}")
+        metrics.close_episode(ep_idx)   
 
         if (ep_idx + 1) % 10 == 0:
-            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | reward={cumulative_reward:.3f}")
+            print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | max_reward_rl={cumulative_reward_rl:.3f} | reward_costplus={cumulative_reward_costplus:.3f} | reward_quantile={cumulative_reward_quantile:.3f}")
 
-    # Save logs + artifacts
-    df = pd.DataFrame(logs)
-    df.to_csv(os.path.join(cfg.out_dir, "poc_logs.csv"), index=False)
+    # Create total rewards_epi
+    rewards_ep = {"RL Agent": rewards_ep_rl, "Cost Plus": rewards_ep_costplus, "Quantile": rewards_ep_quantile}
+
+    # generate metric level-plots
+    export_multi_agent_metrics(metrics, out_dir=cfg.out_dir)
 
     with open(os.path.join(cfg.out_dir, "poc_q_table.pkl"), "wb") as f:
-        pickle.dump(rl_agent.Q, f)
+        pickle.dump([ag.Q for ag in rl_agents], f)
 
     # 4 plots
-    save_plot(rewards_ep, "Episode Reward (RL vs Fixed Opponent)", os.path.join(cfg.out_dir, "01_reward.png"))
-    save_plot(mean_td_ep, "Mean TD Error (episode)", os.path.join(cfg.out_dir, "02_mean_td_error.png"))
-    save_plot(delta_q_ep, "Mean |ΔQ| per step (episode)", os.path.join(cfg.out_dir, "03_delta_q.png"))
-    save_plot(entropy_ep, "Policy Entropy (episode)", os.path.join(cfg.out_dir, "04_entropy.png"))
+    # save_plot_rewards(rewards_ep, "Episode Rewards across agents", os.path.join(cfg.out_dir, "01_reward.png"))
+    # save_plot(mean_td_ep, "Mean TD Error (episode)", os.path.join(cfg.out_dir, "02_mean_td_error.png"))
+    # save_plot(delta_q_ep, "Mean |ΔQ| per step (episode)", os.path.join(cfg.out_dir, "03_delta_q.png"))
+    # save_plot(entropy_ep, "Policy Entropy (episode)", os.path.join(cfg.out_dir, "04_entropy.png"))
 
     print(f"PoC complete. Outputs saved to: {cfg.out_dir}")
-    print("   - poc_logs.csv")
-    print("   - 01_reward.png, 02_mean_td_error.png, 03_delta_q.png, 04_entropy.png")
-    print("   - poc_q_table.pkl")
+    # print("   - poc_logs.csv")
+    # print("   - 01_reward.png, 02_mean_td_error.png, 03_delta_q.png, 04_entropy.png")
+    # print("   - poc_q_table.pkl")
 
 
 if __name__ == "__main__":
     cfg = PoCConfig(
-        n_episodes=50,        
-        seed=0,
+        n_episodes=200,        
+        seed=3,
         opponent_markup=0.10,  
         demand_scale=1.0,
-        verbose=False,
+        verbose=True,
+        n_agents=3
     )
     run_poc(cfg)

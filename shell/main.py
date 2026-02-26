@@ -24,6 +24,8 @@ from shell.agent_interface import Observation
 from shell.evaluations.policy_types import Policy
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
+from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
+from typing import TypeAlias
 
 ISO = "ERCOT"
 START_DATE = "2025-01-01"
@@ -362,6 +364,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
     episode_logs: list[dict] = []
 
+    # Initialize metrics tracker module for multi-agent environment.
+    metrics = MetricsTracker(n_agents=n_agents, agent_names = [f"RL_Agent_{i}" for i in range(n_agents)], action_space=action_space)
+
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
     
@@ -487,6 +492,14 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             )
             rewards = list(out["rewards"])
 
+            # Log Metrics
+            metrics.log_step(
+                episode=ep_idx, step=step_counter, timestamp=ts,
+                action_indices=action_indices, rewards=rewards,
+                clearing_price=clearing_price, demand_mw=demand_mw,
+                rho=out["rho"], clip_infos=clip_infos,
+            )
+
             if args.risk_penalty_lambda > 0.0:
                 for i, clip_info in enumerate(clip_infos):
                     if bool(clip_info.get("clipped", False)):                        
@@ -534,7 +547,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             if step_counter >= state.window_size:
                 done = True
-            
+        
+        # Close Episode
+        metrics.close_episode(ep_idx)
+
         if args.verbose:
             print(f"Episode {ep_idx+1} finished after {step_counter} steps")
         
@@ -549,7 +565,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             "episode": ep_idx,
             "cumulative_reward": float(cumulative_reward),
         })
-         
+
+    # Export multi-agent metrics
+    _ = export_multi_agent_metrics(metrics)     
     with open("q_table.pkl", "wb") as f:
         pickle.dump([ag.Q for ag in agents], f)
 
