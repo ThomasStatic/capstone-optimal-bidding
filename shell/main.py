@@ -278,6 +278,9 @@ def select_and_project_actions(
     *,
     max_quantity: float,
     max_notional: float,
+    frozen: bool = False,
+    agent_policies: List[dict] | None = None,
+    rng: np.random.Generator | None = None,
 ) -> Tuple[List[int], List[dict]]:
     """
     "Simultaneous" action submission: each agent acts from the same obs,
@@ -287,8 +290,23 @@ def select_and_project_actions(
     action_indices: List[int] = []
     clip_infos: List[dict] = []
 
-    for agent in agents:
-        raw_idx = agent.act(obs)
+    for ag_idx, agent in enumerate(agents):
+        raw_idx: int
+        # If policies are frozen and a per-agent policy mapping exists, prefer it
+        if frozen and agent_policies is not None:
+            # extract state_key from obs
+            state_key = obs.get("state_key")
+            if state_key is not None:
+                # If the agent has a deterministic action for this state, use it
+                pol = agent_policies[ag_idx]
+                if pol is not None and state_key in pol:
+                    raw_idx = int(pol[state_key])
+                else:
+                    raw_idx = int(agent.select_softmax_action(state_key, temperature=obs.get("temperature")))
+            else:
+                raw_idx = agent.act(obs)
+        else:
+            raw_idx = agent.act(obs)
         aidx, clip_info = action_space.project_to_feasible(
             raw_idx,
             max_quantity=max_quantity,
@@ -321,6 +339,13 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     n_agents = int(getattr(args, "n_agents", 1))
     agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
 
+    # RNG for any non-agent randomness (policy inertia)
+    rng = np.random.default_rng(seed)
+
+    # Per-agent deterministic policies used when policies are frozen.
+    # Each is a mapping: StateKey -> action_index
+    agent_policies: List[dict] = [{} for _ in agents]
+
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
 
@@ -351,6 +376,38 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     for ep_idx, start_idx in enumerate(episode_starts):
         if args.verbose:
             print(f"\n=== EPISODE {ep_idx+1}/{len(episode_starts)} | start_idx={start_idx} ===")
+
+        # If policy-freeze is enabled, periodically recompute greedy policies
+        # from the current Q-tables and apply inertia to avoid thrashing.
+        if bool(args.policy_freeze_enabled) and int(args.policy_freeze_k) > 0:
+            k = int(args.policy_freeze_k)
+            # Update policies at episode indices that are multiples of k
+            if (ep_idx % k) == 0:
+                if args.verbose:
+                    print(f"[Policy Update] ep={ep_idx} | recomputing greedy policies with inertia={args.policy_inertia_keep}")
+                for i, ag in enumerate(agents):
+                    # Greedy policy derived from current Q (almost-zero temperature)
+                    new_pol: dict = ag.extract_policy(temperature=1e-6)
+                    old_pol: dict = agent_policies[i] if agent_policies[i] is not None else {}
+                    merged: dict = {}
+                    # union of states
+                    states = set(old_pol.keys()) | set(new_pol.keys())
+                    for s in states:
+                        old_a = old_pol.get(s)
+                        new_a = new_pol.get(s)
+                        if old_a is None:
+                            merged[s] = new_a
+                        elif new_a is None:
+                            merged[s] = old_a
+                        elif old_a == new_a:
+                            merged[s] = new_a
+                        else:
+                            keep_prob = float(args.policy_inertia_keep)
+                            if rng.random() < keep_prob:
+                                merged[s] = old_a
+                            else:
+                                merged[s] = new_a
+                    agent_policies[i] = merged
         cumulative_reward = 0
 
         state.episode_start = start_idx
@@ -384,6 +441,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 action_space,
                 max_quantity=MAX_BID_QUANTITY_MW,
                 max_notional=max_notional,
+                frozen=bool(args.policy_freeze_enabled),
+                agent_policies=agent_policies,
+                rng=rng,
             )
 
             # Bidding 24 hours in advance
@@ -598,6 +658,14 @@ def parse_args():
     p.add_argument("--temperature_min", type=float, default=0.1)
     p.add_argument("--temperature_decay", type=float, default=0.995)
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
+    
+    # Policy-freeze / inertia options (disabled by default)
+    p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable periodic policy freeze: hold policies fixed for K episodes while Q updates. (default: enabled)")
+    p.add_argument("--policy_freeze_k", type=int, default=5,
+                   help="Number of episodes to hold policies fixed between greedy policy updates.")
+    p.add_argument("--policy_inertia_keep", type=float, default=0.9,
+                   help="When updating policy, probability of keeping previous action for a state (inertia).")
 
     p.add_argument(
     "--demand_scale",
