@@ -24,6 +24,7 @@ from shell.baselines.cost_plus_markup import CostPlusMarkupPolicy
 from shell.baselines.historical_quantile import HistoricalQuantilePolicy
 from shell.agent_interface import Observation
 from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
+from shell.environment_metrics import EnvironmentMetrics, measure_transition_stationarity
 from shell.state_space import State
 from shell.tabular_q_agent import TabularQLearningAgent
 
@@ -69,7 +70,7 @@ class PoCConfig:
     rho_k: float = 0.05
     rho_p0: float = 50.0
 
-    out_dir: str = "shell/evaluations/poc_controlled_opponents"
+    out_dir: str = "shell/evaluations/poc_controlled_opponents/7 Agents + Baselines + Environment Metrics"
 
 
 def _load_ercot_forecast_series() -> pd.Series:
@@ -351,8 +352,9 @@ def run_poc(cfg: PoCConfig) -> None:
     rewards_ep_costplus: List[float] = []
     rewards_ep_quantile: List[float] = []
 
-    # metrics
+    # metrics - environment and agent
     metrics = MetricsTracker(n_agents=len(all_agents), agent_names=agent_names, action_space=action_space)
+    env_metrics = EnvironmentMetrics(action_space=action_space)
 
     mean_td_ep: List[float] = []
     delta_q_ep: List[float] = []
@@ -466,6 +468,15 @@ def run_poc(cfg: PoCConfig) -> None:
             next_obs, _, done, info = state.step()
             next_state_key = rl_agents[0].state_to_key(next_obs)
 
+            env_metrics.log_transition(
+                episode        = ep_idx,
+                state_key      = state_key,
+                action_idx     = action_indices[0],   # use agent 0 as representative
+                next_key       = next_state_key,
+                clearing_price = clearing_price,
+                demand_mw      = demand_mw,
+            )
+
             for i, ag in enumerate(rl_agents):
                 ag.update_q_table(state_key, action_indices[i], rewards[i], next_state_key, done)
                 if i in q_snapshots and state_key in ag.Q:
@@ -545,7 +556,10 @@ def run_poc(cfg: PoCConfig) -> None:
                     greedy = [int(np.argmax(q)) for q in ag.Q.values() if np.any(q != 0)]
                     unique = len(set(greedy))
                     print(f"  Agent {j}: Q-states={len(ag.Q)} | seen={n_seen} | unique_greedy={unique}")
+        
+        # Close metric episodes
         metrics.close_episode(ep_idx)   
+        env_metrics.close_episode(ep_idx)
 
         if (ep_idx + 1) % 10 == 0:
             print(f"[PoC] ep {ep_idx+1}/{len(episode_starts)} | max_reward_rl={cumulative_reward_rl:.3f} | reward_costplus={cumulative_reward_costplus:.3f} | reward_quantile={cumulative_reward_quantile:.3f}")
@@ -553,8 +567,47 @@ def run_poc(cfg: PoCConfig) -> None:
     # Create total rewards_epi
     rewards_ep = {"RL Agent": rewards_ep_rl, "Cost Plus": rewards_ep_costplus, "Quantile": rewards_ep_quantile}
 
-    # generate metric level-plots
+    # generate metric level-plots and files
     export_multi_agent_metrics(metrics, out_dir=cfg.out_dir)
+
+    snapshots = env_metrics.window_snapshots(window_size=cfg.policy_freeze_k)
+    report = measure_transition_stationarity(snapshots)
+    report.print_summary()
+    report.export(out_dir=cfg.out_dir)
+    report.plot(out_dir=cfg.out_dir)
+    env_metrics.export(out_dir=cfg.out_dir)
+    ## Compute TV across multiple window sizes
+    mean_tvs = []
+    max_tvs = []
+    ks = []
+
+    for k in range(1, 21, 2): 
+        snapshots = env_metrics.window_snapshots(window_size=k)
+        report = measure_transition_stationarity(snapshots)
+
+        mean_tvs.append(report.mean_tvd_global)
+        max_tvs.append(report.max_tvd_global)
+        ks.append(k)
+
+    # Plot mean TV
+    plt.figure()
+    plt.plot(ks, mean_tvs)
+    plt.xlabel("Policy Freeze k")
+    plt.ylabel("Mean TV Distance")
+    plt.title("Mean TV vs Freeze Horizon")
+    plt.tight_layout()
+    plt.savefig(os.path.join(cfg.out_dir, "mean_TVS_Across_Episodes.png"), dpi=200)
+    plt.close()
+
+    # Plot max TV
+    plt.figure()
+    plt.plot(ks, max_tvs)
+    plt.xlabel("Policy Freeze k")
+    plt.ylabel("Max TV Distance")
+    plt.title("Max TV vs Freeze Horizon")
+    plt.tight_layout()
+    plt.savefig(os.path.join(cfg.out_dir, "max_TVS_Across_Episodes.png"), dpi=200)
+    plt.close()
 
     with open(os.path.join(cfg.out_dir, "poc_q_table.pkl"), "wb") as f:
         pickle.dump([ag.Q for ag in rl_agents], f)
@@ -574,10 +627,10 @@ def run_poc(cfg: PoCConfig) -> None:
 if __name__ == "__main__":
     cfg = PoCConfig(
         n_episodes=200,        
-        seed=3,
+        seed=7,
         opponent_markup=0.10,  
         demand_scale=1.0,
         verbose=True,
-        n_agents=3
+        n_agents=7
     )
     run_poc(cfg)
