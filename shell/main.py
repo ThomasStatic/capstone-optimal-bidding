@@ -7,7 +7,6 @@ from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_de
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
-from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
 from shell.linear_approximator import (
     HIST_LOAD_COL,
