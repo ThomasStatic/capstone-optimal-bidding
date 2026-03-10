@@ -514,14 +514,13 @@ def clear_market_with_stack_competition(
     clearing_price: float | None = None,
 ) -> dict:
     """
-    Clear the market using a uniform-price auction with all bids (RL + opponents).
+    Clear the market using a merit-order auction (lowest price first).
     
-    All bids are sorted by price descending. Bids are filled from highest price down
-    until total demand (historical load) is met. All cleared bids pay the clearing price.
+    Bids are sorted by price ascending (merit order). Bids are filled from lowest price up
+    until total demand (historical load) is met. All cleared bids pay the clearing price
+    (uniform price auction), which is the price of the highest-accepted bid (marginal price).
     
     The total cleared quantity always equals total_historical_load.
-    RL agents' cleared quantities are deducted from the opponent quantities that were
-    at the top of the stack (highest price).
     
     Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
     
@@ -533,10 +532,10 @@ def clear_market_with_stack_competition(
         
     Returns:
         Dict with keys:
-        - clearing_price
+        - clearing_price: price all winners pay (marginal price)
         - rl_cleared: list of cleared quantities per RL agent [q0, q1, ...]
         - opponent_cleared: dict mapping opponent_id -> cleared quantity
-        - marginal_price: the price of the last filled bid
+        - marginal_price: the price of the highest accepted bid (clearing price)
         - total_cleared: sum of all cleared quantities
     """
     # Combine all bids with type tags
@@ -557,10 +556,11 @@ def clear_market_with_stack_competition(
             "quantity": float(bid["bid_quantity"]),
         })
     
-    # Sort by price descending (highest bids first)
-    all_bids.sort(key=lambda x: x["price"], reverse=True)
+    # Sort by price ascending (merit order: lowest cost generators first)
+    # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    all_bids.sort(key=lambda x: x["price"], reverse=False)
     
-    # Fill bids from highest price down
+    # Fill bids from lowest price up until demand is satisfied
     total_cleared = 0.0
     cleared_bids = []
     marginal_price = 0.0
@@ -573,14 +573,14 @@ def clear_market_with_stack_competition(
         quantity_to_clear = min(bid["quantity"], remaining_demand)
         
         if quantity_to_clear > 1e-6:  # Only if quantity is non-negligible
-            marginal_price = bid["price"]
+            marginal_price = bid["price"]  # Price of highest-accepted (last-filled) bid
             cleared_bids.append({
                 **bid,
                 "cleared_quantity": quantity_to_clear,
             })
             total_cleared += quantity_to_clear
     
-    # If no clearing price was specified, use the marginal price from auction
+    # Uniform price auction: all winners pay the marginal (clearing) price
     if clearing_price is None:
         clearing_price = marginal_price if marginal_price > 0 else 0.0
     
@@ -725,6 +725,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     load_df, lmp_df = load_data()
     forecast_series = _load_ercot_forecast_series()
     state, action_space, market_model = build_world(load_df, lmp_df)
+    print(f"[Market Model] Inferred marginal cost: {market_model.params.marginal_cost:.4f} | price noise std: {market_model.params.price_noise_std:.4f}")
     apply_demand_scale_to_state(state, float(args.demand_scale))
     state.apply()
 
