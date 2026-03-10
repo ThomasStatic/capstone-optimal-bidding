@@ -1,10 +1,11 @@
-# %%
 import pandas as pd
-import numpy as np
-import os
+from pathlib import Path
+import argparse
 
-FUEL_MIX_FILEPATHS = [r"IntGenbyFuel2025.xlsx", r"IntGenbyFuel2026.xlsx"]
-ROOT = r"C:\Users\rrk23\OneDrive\Documents\GitHub\capstone-optimal-bidding\Preprocessing\raw_data"
+# Updated data roots
+ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = ROOT /  "Preprocessing" / "raw_data"
+OUTPUT_ROOT = ROOT
 
 ## Mapper - technology -> fuel
 TECHNOLOGY_MAP = {
@@ -50,7 +51,10 @@ def map_technology(tech: str) -> str:
     return TECHNOLOGY_MAP.get(tech, 'Other')
 
 def get_active_generators(ROOT: str,
-                          filepath_860: str, filepath_923: str, filepath_plant: str,
+                          OUTPUT_ROOT:str,
+                          OUTPUT_FILE_NAME: str,
+                          filepath_860: str, filepath_923: str,
+                          filepath_plant: str,
                           capacity_factor_threshold: float = 0.0,
                           nerc_filter: str = None) -> dict:
     """
@@ -59,9 +63,9 @@ def get_active_generators(ROOT: str,
     Returns dict keyed by (plant_code, generator_id) with fuel, nameplate, CF.
     """
 
-    # --- Load EIA-860 Operable sheet (header on row 2, data from row 3) ---
-    filepath_860 = os.path.join(ROOT, filepath_860)
-    df_860 = pd.read_excel(filepath_860, sheet_name='Operable', header=1)
+    # Load EIA 860 for nameplate capacity
+    filepath_860 = ROOT / filepath_860
+    df_860 = pd.read_csv(filepath_860, header=1)
     df_860.columns = df_860.columns.str.strip()
 
     # Keep relevant columns
@@ -69,7 +73,6 @@ def get_active_generators(ROOT: str,
                 'Plant Code':              'plant_code',
                 'Plant Name':              'plant_name',
                 'Technology':              'technology',
-                'NERC Region':             'nerc_region',   # ADD
                 'Nameplate Capacity (MW)': 'nameplate_mw',
                 'Status':                  'status',
                 }
@@ -78,9 +81,11 @@ def get_active_generators(ROOT: str,
     unmapped = df_860[~df_860['technology'].isin(TECHNOLOGY_MAP.values())]['technology'].unique()
     if len(unmapped):
         print(f"Unmapped technologies: {unmapped}")
+    df_860['plant_code'] = pd.to_numeric(df_860['plant_code'], errors='coerce')
 
-    # --- Load Plant file for NERC region ---
-    df_plant = pd.read_excel(os.path.join(ROOT, filepath_plant), sheet_name='Plant', header=1)
+    # Load plant file to grab relevant ISO/NERC region
+    filepath_plant = ROOT / filepath_plant
+    df_plant = pd.read_csv(filepath_plant, header=1)
     df_plant.columns = df_plant.columns.str.replace('\n', ' ').str.strip()
     df_plant = df_plant[['Plant Code', 'NERC Region']].rename(columns={'Plant Code': 'plant_code', 'NERC Region': 'nerc_region'})
     df_plant['plant_code'] = pd.to_numeric(df_plant['plant_code'], errors='coerce')
@@ -98,61 +103,64 @@ def get_active_generators(ROOT: str,
 
     df_860_nameplate = df_860.groupby('plant_code')['nameplate_mw'].sum().reset_index()
     df_860 = df_860.merge(df_860_nameplate.rename(columns={'nameplate_mw': 'nameplate_mw_total'}), on='plant_code', how='left')
+    df_860['plant_code'] = pd.to_numeric(df_860['plant_code'], errors='coerce')
 
-    # --- Load EIA-923 (header on row 6, i.e. header=5) ---
-    filepath_923 = os.path.join(ROOT, filepath_923)
-    df_923 = pd.read_excel(filepath_923, sheet_name='Page 1 Generation and Fuel Data', header=5)
+    # Load EIA-923 for annual generation parsing
+    filepath_923 = ROOT / filepath_923
+    df_923 = pd.read_csv(filepath_923, header=5)
     df_923.columns = df_923.columns.str.strip()
-
-    netgen_cols = [c for c in df_923.columns if 'Netgen' in str(c) or 'Net Generation' in str(c)]
+    # Grab relevant columns
+    annual_col = next(c for c in df_923.columns if 'Net Generation' in str(c) and 'Megawatt' in str(c))
     plant_col = next((c for c in df_923.columns if 'Plant Id' in c or 'Plant Code' in c), None)
-
-    df_923 = df_923[[plant_col] + netgen_cols].copy()
-    df_923 = df_923.rename(columns={plant_col: 'plant_code'})
+    # Dataframe filtering + datatype conversion
+    df_923 = df_923[[plant_col, annual_col]].copy()
+    df_923 = df_923.rename(columns={plant_col: 'plant_code', annual_col: 'annual_mwh'})
     df_923['plant_code'] = pd.to_numeric(df_923['plant_code'], errors='coerce')
-    df_923[netgen_cols] = df_923[netgen_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    # Sum all monthly netgen columns -> annual MWh per plant
-    df_923['annual_mwh'] = df_923[netgen_cols].sum(axis=1)
+    df_923['annual_mwh'] = pd.to_numeric(df_923['annual_mwh'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
     df_923_agg = df_923.groupby('plant_code')['annual_mwh'].sum().reset_index()
-
-    # --- Merge 860 + 923 on plant_code ---
+    df_923['plant_code'] = pd.to_numeric(df_923['plant_code'], errors='coerce')
+    # Merge on plant code + filter for active generators
     merged = df_860.merge(df_923_agg, on='plant_code', how='left')
+    merged = merged.drop(columns = "nameplate_mw")
     merged['annual_mwh'] = merged['annual_mwh'].fillna(0)
-    df_860 = df_860.drop_duplicates(subset=['plant_code'])
+    merged = merged.drop_duplicates()
 
-    # Then use nameplate_mw_total in the re-calculate on entire plant:
     merged['capacity_factor'] = merged['annual_mwh'] / (merged['nameplate_mw_total'] * 8760)
-    merged['capacity_factor'] = merged['capacity_factor'].clip(lower=0)  # no negatives
-
     merged = merged[merged['capacity_factor'] >= capacity_factor_threshold]
 
     # --- Build output dictionary ---
-    result = {}
+    output_dict = {}
     for _, row in merged.iterrows():
-        key = int(row['plant_code'])
+        # Key - Technology + Plantcode
+        key = str(row['technology']) + "_" + str(int(row['plant_code']))
         # Comment out some results
-        result[key] = {
+        output_dict[key] = {
             'plant_name':         row['plant_name'],
+            # 'plant_code':         row['plant_code'],  
             'fuel_type':         row['technology'],
             # 'nerc_region':        row['nerc_region'],
             'capacity': row['nameplate_mw_total'],
             # 'annual_mwh':         round(row['annual_mwh'], 2),
-            # 'capacity_factor':    round(row['capacity_factor'], 4),
+            'capacity_factor_2025':    round(row['capacity_factor'], 4),
         }
-    pd.DataFrame.from_dict(result, orient='index').to_csv(os.path.join(r"C:\Users\rrk23\OneDrive\Documents\GitHub\capstone-optimal-bidding", 'active_generators.csv'))
-    return result
+    # Output file
+    output_file_name = OUTPUT_ROOT / OUTPUT_FILE_NAME
+    pd.DataFrame.from_dict(output_dict, orient='index').rename_axis('Power_Plant_ID').to_csv(output_file_name)
+    return output_dict
 
 
 ## Grab fuel mix and break down by hour + convert to percent
-def preprocess_fuel_mix(ROOT: str, filepaths: list) -> pd.DataFrame:
+def load_fuel_mix_raw(ROOT: str,
+                        OUTPUT_ROOT:str,
+                        OUTPUT_FILE_NAME: str,
+                        data_filepaths: list) -> pd.DataFrame:
     sheet_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     
     all_dfs = []
     
-    for filepath in filepaths:
-        filepath = os.path.join(ROOT, filepath)
+    for filepath in data_filepaths:
+        filepath = ROOT / filepath
         for sheet in sheet_names:
             try:
                 df = pd.read_excel(filepath, sheet_name=sheet, header=0)
@@ -181,37 +189,79 @@ def preprocess_fuel_mix(ROOT: str, filepaths: list) -> pd.DataFrame:
 
     combined = pd.concat(all_dfs).sort_index()
     combined = combined.resample('h').sum()
+    # Export combined csv for raw data
+    raw_fuel_mix_file_name = OUTPUT_ROOT / OUTPUT_FILE_NAME 
+    combined.to_csv(raw_fuel_mix_file_name)
 
+    return combined
+
+def preprocess_fuel_mix(OUTPUT_ROOT: str,
+                    OUTPUT_FILE_NAME: str,
+                    combined: pd.DataFrame) -> pd.DataFrame:
     combined_pos = combined.clip(lower=0)
     total = combined_pos.sum(axis=1)
-    pct = combined_pos.div(total, axis=0) * 100
-    pct = pct.round(4)
+    pct = combined_pos.div(total, axis=0)
+    pct = pct.round(6)
     pct.insert(0, 'Total_MW', total)
-
-    pct.to_csv(r"C:\Users\rrk23\OneDrive\Documents\GitHub\capstone-optimal-bidding\\fuel_mix_2025.csv")
-
+    pct.to_csv(OUTPUT_ROOT / OUTPUT_FILE_NAME)
     return pct
 
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--verbose", action="store_true", help="Verbose logging")
+    p.add_argument("--load_fuel_mix_from_excel", action="store_true", help="If re-running of excel fuel mix data required")
+    p.add_argument('--fuel_mix_filepaths', nargs='+',
+                   default=["IntGenbyFuel2025.xlsx", "IntGenbyFuel2026.xlsx"])
+    p.add_argument('--fuel_mix_raw_output',
+                   default="IntGenbyFuel20252026.csv", help="Used if data exists")
+    p.add_argument('--fuel_mix_pct_output',
+                   default="fuel_mix_2025_2026_ercot.csv")
+    p.add_argument('--filepath_860',   default='3_1_Generator_Y2024.csv')
+    p.add_argument('--filepath_923',   default='EIA923_Schedules_2_3_4_5_M_12_2025_20FEB2026.csv')
+    p.add_argument('--filepath_plant', default='2___Plant_Y2024.csv')
+    p.add_argument('--generators_output', default='active_generators_2025_ercot.csv')
+    p.add_argument('--capacity_factor_threshold', type=float, default=0.05)
+    p.add_argument('--nerc_filter', default='TRE', help = "To denote the balancing authority data used")
+    return p.parse_args()
 if __name__ == "__main__":
-    result = preprocess_fuel_mix(ROOT=ROOT, filepaths=FUEL_MIX_FILEPATHS)
-    # All ERCOT states (TX), CF > 5%
-    generators = get_active_generators(ROOT=ROOT,
-        filepath_860='3_1_Generator_Y2024.xlsx',
-        filepath_923='EIA923_Schedules_2_3_4_5_M_12_2025_20FEB2026.xlsx',
-        filepath_plant='2___Plant_Y2024.xlsx',
-        capacity_factor_threshold=0.05,
-        nerc_filter='TRE'
+    # Ex. Command: python Preprocessing/preprocessing.py --load_fuel_mix_from_excel --verbose
+    args = parse_args()
+    if args.load_fuel_mix_from_excel:
+        fuel_mix_merged_csv = load_fuel_mix_raw(
+            ROOT=DATA_ROOT / "xlsx",
+            OUTPUT_ROOT=DATA_ROOT / "csv",
+            OUTPUT_FILE_NAME=args.fuel_mix_raw_output,
+            data_filepaths=args.fuel_mix_filepaths
+        )
+    else:
+        fuel_mix_merged_csv = pd.read_csv(DATA_ROOT / "csv" / args.fuel_mix_raw_output, index_col=0, parse_dates=True)
+        fuel_mix_merged_csv = fuel_mix_merged_csv.astype(float)
+
+    result = preprocess_fuel_mix(
+        OUTPUT_ROOT=OUTPUT_ROOT,
+        OUTPUT_FILE_NAME=args.fuel_mix_pct_output,
+        combined=fuel_mix_merged_csv
     )
-    
-    # Inspect one entry
-    key = list(generators.keys())[0]
-    print(key, generators[key])
 
-    # Inspect sum
-    result = 0.0
-    for key in generators.keys():
-        row = generators[key]
-        result += row['capacity']
-    print(f"Result: {result}")
+    generators = get_active_generators(
+        ROOT=DATA_ROOT / "csv",
+        OUTPUT_ROOT=OUTPUT_ROOT,
+        OUTPUT_FILE_NAME=args.generators_output,
+        filepath_860=args.filepath_860,
+        filepath_923=args.filepath_923,
+        filepath_plant=args.filepath_plant,
+        capacity_factor_threshold=args.capacity_factor_threshold,
+        nerc_filter=args.nerc_filter
+    )
 
-# %%
+    if args.verbose:
+        capacity = 0.0
+        capacity_by_fuel = {}
+        for key in generators.keys():
+            row = generators[key]
+            capacity += row['capacity']
+            fuel = row['fuel_type']
+            capacity_by_fuel[fuel] = capacity_by_fuel.get(fuel, 0.0) + row['capacity']
+        print(f"Total capacity: {capacity} MW")
+        for fuel, cap in sorted(capacity_by_fuel.items()):
+            print(f"  {fuel}: {cap} MW")
