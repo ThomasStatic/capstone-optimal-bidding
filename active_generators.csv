@@ -1,0 +1,319 @@
+,plant_name,fuel_type,capacity
+298,Limestone,Coal,1849.8
+3437,Eagle Pass,Hydro,9.600000000000001
+3441,Nueces Bay,Natural Gas,730.2
+3460,Cedar Bayou,Natural Gas,1530.0
+3469,T H Wharton,Natural Gas,1189.9
+3470,W A Parish,Natural Gas,4008.4
+3491,Handley,Natural Gas,1314.8
+3612,V H Braunig,Natural Gas,1138.0
+3628,R W Miller,Natural Gas,537.6
+4937,Thomas C Ferguson,Natural Gas,574.6
+4939,Barney M Davis,Natural Gas,1082.2
+6145,Comanche Peak,Nuclear,2430.0
+6146,Martin Lake,Coal,2379.6000000000004
+6178,Coleto Creek,Coal,622.4
+6179,Fayette Power Project,Coal,1690.0
+6180,Oak Grove (TX),Coal,1795.4
+6183,San Miguel,Coal,410.0
+6251,South Texas Project,Nuclear,2708.6
+7030,Major Oak Power,Coal,349.2
+7097,J K Spruce,Coal,1488.5
+7512,Arthur Von Rosenberg,Natural Gas,575.0
+7900,Sand Hill,Natural Gas,696.4
+10167,Seadrift Coke LP,Oil,7.6
+10298,Bayou Cogen Plant,Natural Gas,318.4
+10554,Formosa Utility Venture Ltd,Natural Gas,933.4
+10692,ExxonMobil Baytown Turbine,Natural Gas,381.8
+50043,Houston Chemical Complex Battleground,Natural Gas,380.70000000000005
+50121,Valero Refinery Corpus Christi West,Oil,69.2
+50153,Texas City Plant Union Carbide,Other,45.0
+50304,Shell Deer Park,Natural Gas,274.0
+50815,"Odyssey Energy Altura Cogen, LLC",Natural Gas,643.6
+52088,Texas City Power Plant,Natural Gas,450.0
+52120,Freeport Energy,Natural Gas,419.3
+54520,Village Creek Water Reclamation Facility,Natural Gas,10.6
+54676,Oyster Creek Unit VIII,Natural Gas,497.9
+55015,Sweeny Cogen Facility,Natural Gas,572.0
+55047,Pasadena Cogeneration,Natural Gas,815.0
+55086,Gregory Power Plant,Natural Gas,469.8
+55091,Midlothian Energy Facility,Natural Gas,1734.0
+55097,Lamar Power Project,Natural Gas,1112.6
+55098,Frontera Energy Center,Natural Gas,529.0
+55123,Magic Valley Generating Station,Natural Gas,801.0
+55132,Tenaska Gateway Generating Station,Natural Gas,939.5999999999999
+55137,Rio Nogales Power Project,Natural Gas,940.2
+55139,Wolf Hollow I LP,Natural Gas,788.4000000000001
+55144,Hays Energy Project,Natural Gas,989.0
+55153,Guadalupe Generating Station,Natural Gas,1088.2
+55154,Lost Pines 1 Power Project,Natural Gas,609.0
+55168,Bastrop Energy Center,Natural Gas,618.7
+55172,Thad Hill Energy Center,Natural Gas,807.0
+55187,Channelview Cogeneration Plant,Natural Gas,918.3
+55206,Corpus Christi Energy Center,Natural Gas,593.3
+55215,Odessa-Ector Power Plant,Natural Gas,1152.8
+55226,Freestone Energy Center,Natural Gas,1036.0
+55230,Jack County,Natural Gas,1280.0
+55299,Channel Energy Center LLC,Natural Gas,923.8
+55313,Ingleside Cogeneration,Natural Gas,517.0
+55320,Wise County Power LLC,Natural Gas,821.7
+55327,Baytown Energy Center,Natural Gas,932.9000000000001
+55357,Jack Fusco Energy Center,Natural Gas,675.6
+55464,Deer Park Energy Center,Natural Gas,1176.0
+55470,Green Power 2,Natural Gas,611.0
+55480,Forney Energy Center,Natural Gas,1894.1999999999998
+55501,Kiamichi Energy Facility,Natural Gas,1370.0
+55545,Hidalgo Energy Center,Natural Gas,551.3
+55581,King Mountain Wind Ranch 1,Wind,278.0
+55708,Nacogdoches Power,Biomass,114.0
+56152,Freeport Energy Center,Natural Gas,260.0
+56291,Horse Hollow Wind Energy Center,Wind,735.5
+56337,Sweetwater Wind 4 LLC,Wind,241.0
+56350,Colorado Bend Energy Center,Natural Gas,654.1
+56395,Mesquite Wind Power LLC,Wind,200.0
+56483,Post Oak Wind LLC,Wind,200.0
+56484,Buffalo Gap 2 Wind Farm,Wind,232.5
+56593,Roscoe Wind Farm LLC,Wind,209.0
+56611,Sandy Creek Energy Station,Coal,1008.0
+56661,Pattern Gulf Wind,Wind,283.2
+56763,Capricorn Ridge Wind LLC,Wind,662.5
+56795,Penascal Wind Power LLC,Wind,201.6
+56961,Notrees Windpower Hybrid,Wind,188.5
+56981,Pyron Wind Farm LLC Hybrid,Battery Storage,9.9
+57095,Penascal II Wind Project LLC,Wind,201.6
+57212,Papalote Creek II LLC,Wind,200.1
+57520,Trinity Hills,Wind,198.0
+57617,Hidalgo Wind Farm LLC,Wind,250.0
+57751,Los Vientos Wind 1A,Wind,200.0
+57752,Los Vientos Wind 1B,Wind,201.6
+57802,Magic Valley Wind Farm I LLC,Wind,203.0
+57983,Stephens Ranch Wind Energy LLC,Wind,376.0
+58001,Temple Power Station,Natural Gas,1606.4
+58005,Rayburn Energy Station LLC,Natural Gas,803.2
+58151,Central Utility Plant - Texas A&M,Natural Gas,45.1
+58242,Pattern Panhandle Wind LLC,Wind,218.0
+58596,"Grandview Wind Farm, LLC",Wind,211.2
+58614,Patriot Wind Farm,Wind,226.1
+58765,Miami Wind Energy Center,Wind,288.6
+58772,Longhorn Wind,Wind,200.0
+58773,TX Hereford Wind,Wind,200.0
+58870,Rentech Nitrogen Pasadena Cogeneration,Other,15.4
+59034,Shannon Wind,Wind,204.0
+59063,Stella Wind Farm,Wind,201.0
+59066,Bruennings Breeze Wind Farm,Wind,228.0
+59068,"Colbeck's Corner, LLC",Wind,200.0
+59206,Alamo 6,Solar,105.0
+59245,Fluvanna,Wind,155.4
+59246,Goodnight,Wind,265.5
+59320,Los Vientos Windpower III,Wind,200.0
+59321,Los Vientos Windpower IV,Wind,200.0
+59332,Mesquite Creek Wind,Wind,211.2
+59384,South Plains Wind Phase I,Wind,200.0
+59391,Red Gate Power Plant,Natural Gas,224.39999999999998
+59442,Logans Gap Wind LLC,Wind,200.1
+59621,TX Jumbo Road Wind,Wind,299.7
+59712,"San Roman Wind I, LLC",Wind,95.3
+59812,Wolf Hollow II,Natural Gas,1231.2
+59943,Rattlesnake Den,Wind,207.2
+59972,Bearkat,Wind,196.7
+59994,RE Roserock,Solar,160.0
+60044,Buckthorn Westex,Solar,154.0
+60087,South Plains II,Wind,300.0
+60104,"Javelina Wind Energy, LLC",Wind,249.7
+60122,Colorado Bend II,Natural Gas,1230.3
+60123,Castle Gap Solar Hybrid,Solar,189.9
+60210,Cotton Plains Wind Farm,Wind,50.4
+60217,Rocksprings,Wind,149.3
+60264,Bacliff,Natural Gas,427.20000000000005
+60271,"Canyon Wind Project, LLC",Wind,308.8
+60366,Old Settler Wind,Wind,151.2
+60372,Lamesa Solar,Solar,102.0
+60436,East Pecos Solar,Solar,118.5
+60502,"Tyler Bluff Wind Project, LLC",Wind,125.6
+60581,Upton County Solar,Solar,150.0
+60657,"Salt Fork Wind Project, LLC",Wind,174.0
+60682,Pearl Solar,Solar,50.0
+60743,"Rattlesnake Power, LLC",Wind,160.0
+60789,Bluebell Solar,Solar,30.0
+60856,Astra Wind Farm,Wind,163.0
+60901,Willow Springs Wind Farm,Wind,250.0
+60902,Dermott Wind,Wind,253.0
+60983,Buckthorn Wind,Wind,100.5
+60987,Santa Rita Wind Energy,Wind,300.0
+60989,SolaireHolman Solar Project,Solar,50.0
+61001,Cactus Flats Wind Energy Project,Wind,148.4
+61032,Heart of Texas Wind Project,Wind,180.0
+61212,Flat Top Wind I,Wind,200.0
+61343,Karankawa Wind LLC,Wind,307.1
+61346,RE Maplewood,Solar,250.0
+61368,Midway Solar - TX,Solar,182.0
+61402,Foard City Wind,Wind,352.8
+61417,Gopher Creek Wind Farm,Wind,158.0
+61643,Denton Energy Center,Natural Gas,225.60000000000002
+61697,Lamesa II,Solar,50.0
+61773,"Palmas Wind, LLC",Wind,144.9
+61776,"Midway Wind, LLC",Wind,162.9
+61782,Live Oak Wind Project,Wind,199.5
+61865,"Rio Bravo Windpower, LLC",Wind,237.6
+61906,Phoebe Solar,Solar,250.0
+61920,Galloway 1 Solar Farm,Solar,250.0
+61921,Tahoka Wind,Wind,300.0
+61962,Holstein 1 Solar Farm,Solar,200.0
+61969,"Torrecillas Wind Energy, LLC",Wind,300.0
+61970,Blue Summit II Wind,Wind,99.4
+62038,Santa Rita East,Wind,302.4
+62141,Rambler,Solar,200.0
+62142,Amadeus Wind Farm,Wind,250.0
+62207,Reloj del Sol Wind Farm,Wind,209.4
+62227,"Seymour Hills Wind Project, LLC",Wind,30.2
+62249,Misae Solar,Solar,240.0
+62258,Mesteno,Wind,201.6
+62259,Ranchero Wind Farm LLC,Wind,300.0
+62356,Lockett Windfarm,Wind,183.8
+62411,Griffin Trail Wind,Wind,225.6
+62415,West of the Pecos Solar,Solar,100.0
+62416,Cranell Wind Farm LLC,Wind,220.0
+62417,Peyton Creek Wind Farm LLC,Wind,151.2
+62448,Lapetus,Solar,100.0
+62483,Taygete Energy Project LLC,Solar,255.0
+62505,G.S.E. One LLC,Solar,83.0
+62561,"Roadrunner, LLC Hybrid",Solar,463.3
+62562,"High Lonesome Wind Power, LLC Hybrid",Wind,562.8
+62566,Blue Summit III Wind,Wind,200.2
+62587,Mesquite Star,Wind,418.9
+62618,Hidalgo Wind Farm II,Wind,50.4
+62620,Sage Draw Wind,Wind,338.4
+62630,Jumbo Hill Wind Project,Wind,160.7
+62715,Wildcat Creek Wind Farm LLC,Wind,175.3
+62755,Prospero Solar,Solar,300.0
+62765,El Campo Wind,Wind,242.8
+62772,Coniglio Solar,Solar,123.6
+62773,"BT Cooke Solar, LLC",Solar,59.0
+62774,Kellam Solar,Solar,59.0
+62783,Blackjack Creek Wind Farm,Wind,239.6
+62804,Greasewood Solar,Solar,255.0
+62809,BMP Wind (TX),Wind,340.0
+62836,Maryneal Windpower,Wind,182.4
+62845,ENGIE Long Draw Solar LLC,Solar,225.0
+62853,Maverick Creek Wind,Wind,491.6
+62855,West Raymond Wind Farm LLC,Wind,239.8
+62909,"Raymond Wind Farm, LLC",Wind,200.2
+62932,Oberon IB,Solar,30.0
+62933,Oberon IA,Solar,150.0
+62945,Fighting Jays Solar Project,Solar,227.5
+63030,"Canadian Breaks, LLC",Wind,210.1
+63100,Prairie Hill Wind Project,Wind,300.0
+63101,Las Lomas Wind Project,Wind,201.6
+63194,Delilah Solar Energy LLC,Solar,300.0
+63209,Aviator Wind,Wind,525.0
+63211,Samson Solar Energy,Solar,250.0
+63222,Impact Solar 1,Solar,198.5
+63223,Brightside,Solar,50.7
+63233,Emerald Grove,Solar,108.0
+63255,2W Permian Solar Project Hybrid,Solar,460.0
+63273,Wagyu,Solar,120.0
+63320,Titan Solar Project,Solar,260.0
+63328,Juno Solar Project,Solar,305.6
+63329,Aragorn Solar Project,Solar,187.2
+63335,HO Clarke Generating,Natural Gas,484.0
+63343,Galloway 2 Solar Farm,Solar,110.0
+63351,Bluebell Solar II,Solar,115.0
+63519,Crane Solar Project,Solar,150.0
+63624,"La Chalupa, LLC",Wind,198.5
+63655,Coyote Wind LLC,Wind,242.5
+63688,Topaz Generating,Natural Gas,605.0
+63738,Helena Wind,Wind,268.2
+63739,Las Majadas Wind Farm,Wind,272.6
+63764,Elm Branch Solar 1,Solar,134.7
+63769,Briar Creek Solar 1,Solar,127.0
+63797,Ellis Solar LLC,Solar,80.0
+63840,Sparta Solar,Solar,250.0
+63883,Samson Solar Energy III LLC,Solar,250.0
+63892,Lily Solar Hybrid,Battery Storage,201.89999999999998
+63905,Azure Sky Solar,Solar,316.2
+63985,Fort Bend Solar LLC,Solar,240.0
+64026,"ANSON Solar Center, LLC",Solar,200.0
+64075,Taygete II Energy Project,Solar,203.8
+64133,"Old 300 Solar Center, LLC",Solar,430.0
+64149,"Western Trail Wind, LLC",Wind,366.6
+64164,"Azure Sky Wind Project, LLC Hybrid",Wind,470.2
+64165,Priddy Wind Project,Wind,302.4
+64204,Elara Solar,Solar,132.4
+64233,Hecate Energy Frye Solar LLC,Solar,500.0
+64258,AP Sunray LLC,Solar,203.5
+64259,BPL Crown Solar LLC,Solar,100.0
+64260,BPL Sol Solar LLC,Solar,100.0
+64325,Prospero Solar II,Solar,250.0
+64347,Mockingbird Solar Center,Solar,471.0
+64383,Braes Bayou Plant,Natural Gas,484.0
+64447,Brazoria West,Solar,200.0
+64538,Corazon Energy LLC,Solar,200.0
+64544,Ranchland Wind Project II,Wind,148.0
+64551,Ranchland Wind Project I,Wind,114.9
+64591,"El Algodon Alto Wind Farm, LLC",Wind,200.2
+64639,TG East,Wind,336.0
+64672,"Blue Jay Solar I, LLC",Battery Storage,51.6
+64710,White Mesa Wind,Wind,500.6
+64859,"IP Radian, LLC",Solar,320.0
+64927,Aktina Solar,Solar,500.0
+65028,"Roseland Solar Project, LLC",Battery Storage,51.8
+65034,Bernard Creek Solar,Solar,230.0
+65048,Hubbard Wind,Wind,300.0
+65162,Lacy Creek Wind Energy Center,Wind,301.3
+65271,Noble Solar,Battery Storage,400.0
+65303,Sun Valley Solar Project,Solar,250.0
+65306,Limestone Wind Project,Wind,299.2
+65308,Horizon Solar,Solar,200.0
+65333,Shakes Solar,Solar,200.0
+65335,Appaloosa Run Wind,Wind,171.8
+65372,Mark One Power Station,Natural Gas,484.0
+65373,Brotman Power Station,Natural Gas,484.0
+65521,"Longbow Solar, LLC",Solar,78.1
+65546,Inertia Wind Project,Wind,301.0
+65631,"Pisgah Ridge Solar, LLC",Solar,250.0
+65644,Lumina II Solar Project,Solar,326.6
+65645,Lumina Solar Project,Solar,326.6
+65654,Texas Solar Nova 1,Solar,252.0
+65660,Texas Solar Nova 2,Solar,200.0
+65661,Nebula Solar,Solar,135.0
+65662,Vancourt Solar Interconnections,Solar,45.0
+65762,Waco Solar,Solar,400.0
+65763,Young Wind,Wind,500.0
+65790,Castle Gap Wind,Wind,196.8
+65793,"Concho Valley Solar, LLC",Solar,172.8
+65937,"Porter Solar, LLC (TX)",Solar,245.0
+65947,Tres Bahias,Solar,196.3
+65975,Starr Solar Ranch,Solar,136.0
+65981,Second Division Solar,Solar,100.0
+65998,"True North Solar, LLC",Solar,238.8
+66046,Brazoria County Solar Project (Danciger),Solar,200.0
+66137,Zier Solar,Solar,200.4
+66157,Red Tailed Hawk Solar LLC,Solar,350.0
+66262,Cutlass Solar II,Solar,202.8
+66310,Cutlass Solar 1 LLC,Solar,110.9
+66321,"King Creek Wind Farm 1, LLC",Wind,184.0
+66323,"King Creek Wind Farm 2, LLC",Wind,209.0
+66324,BPL Files Solar,Solar,157.5
+66410,Grizzly Ridge Solar,Solar,100.0
+66420,Five Wells Solar Center - Hybrid,Solar,617.9
+66471,Eiffel Solar Project,Solar,240.0
+66531,Pioneer Hutt Wind Energy,Wind,140.0
+66540,Shamrock Wind,Wind,223.9
+66604,Remy Jade Power Station,Natural Gas,484.0
+66801,"Fence Post Solar Hybrid Project, LLC",Solar,308.0
+66821,Orion III Solar Project,Solar,250.0
+66859,Orion I Solar Project,Solar,200.0
+66902,Roadrunner Wind Farm,Wind,256.0
+66941,Orion II Solar Project,Solar,250.0
+67006,Greasewood II LLC,Solar,306.0
+67019,"Copperhead Solar, LLC",Battery Storage,250.0
+67023,Dileo Solar,Solar,71.4
+67024,Pitts Dudik Solar,Solar,49.6
+67284,Ganado Solar,Solar,221.0
+67424,Hopkins Energy LLC,Solar,250.0
+67425,"Century Oak Wind Project, LLC",Wind,151.5
+67580,Markum Solar Farm,Solar,161.0
+67601,Diversion Wind Energy LLC,Wind,200.6
+67762,Stampede Solar Hybrid,Battery Storage,72.2
+67849,BT Signal Ranch,Solar,50.0
+68474,Peacock Energy Project,Solar,150.0
