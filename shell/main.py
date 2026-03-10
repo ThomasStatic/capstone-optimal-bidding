@@ -37,6 +37,12 @@ MAX_BID_QUANTITY_MW = 50
 FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
 FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
 
+# Henry Hub-based marginal cost configuration.
+# We use the EIA Henry Hub Natural Gas Spot Price CSV (monthly, $/MMBtu),
+# multiply by a constant heat rate to obtain $/MWh, and sample once per episode.
+HENRY_HUB_CSV_PATH = "Henry_Hub_Natural_Gas_Spot_Price.csv"
+HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH = 7.5
+
 def _load_ercot_forecast_series() -> pd.Series:
     """
     Returns an hourly forecast series indexed by UTC datetime, in MW.
@@ -75,6 +81,65 @@ def _load_ercot_forecast_series() -> pd.Series:
     )
 
     return s
+
+def _load_henry_hub_marginal_cost_values() -> np.ndarray:
+    """
+    Load monthly Henry Hub spot prices from the EIA CSV and convert
+    them into a vector of marginal costs in $/MWh using a fixed heat rate.
+
+    The CSV has a small text header followed by:
+        Month,Henry Hub Natural Gas Spot Price Dollars per Million Btu
+    """
+    df = pd.read_csv(
+        HENRY_HUB_CSV_PATH,
+        skiprows=4,  # skip title / URL / timestamp / source lines
+    )
+
+    df = df.rename(
+        columns={
+            "Month": "date",
+            "Henry Hub Natural Gas Spot Price Dollars per Million Btu": "price_per_mmbtu",
+        }
+    )
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["price_per_mmbtu"] = pd.to_numeric(df["price_per_mmbtu"], errors="coerce")
+    df = df.dropna(subset=["date", "price_per_mmbtu"])
+
+    # Convert to $/MWh using a fixed heat rate; no extra O&M adder for now.
+    df["marginal_cost_per_mwh"] = df["price_per_mmbtu"] * float(HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH)
+
+    start = pd.to_datetime(START_DATE)
+    end = pd.to_datetime(END_DATE)
+    mask = (df["date"] >= start) & (df["date"] <= end)
+    mc = df.loc[mask, "marginal_cost_per_mwh"]
+
+    # If the environment window is outside the Henry Hub sample, fall back to all data.
+    if mc.empty:
+        mc = df["marginal_cost_per_mwh"]
+
+    values = mc.to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ValueError("No finite marginal cost values loaded from Henry Hub CSV.")
+    return values
+
+def _make_marginal_cost_sampler(values: np.ndarray):
+    """
+    Build a simple sampler that returns a random historical marginal cost.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if values.size == 0:
+        raise ValueError("No values provided to marginal cost sampler.")
+
+    def _sample(rng: np.random.Generator | None = None) -> float:
+        if rng is None:
+            return float(np.random.choice(values))
+        idx = int(rng.integers(0, values.size))
+        return float(values[idx])
+
+    return _sample
 
 def apply_demand_scale_to_state(state: State, scale: float) -> None:
     if scale == 1.0:
@@ -342,25 +407,27 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     # RNG for any non-agent randomness (policy inertia)
     rng = np.random.default_rng(seed)
 
+    # Build a Henry Hub-based marginal cost sampler for per-episode sampling.
+    try:
+        henry_mc_values = _load_henry_hub_marginal_cost_values()
+        marginal_cost_sampler = _make_marginal_cost_sampler(henry_mc_values)
+        if args.verbose:
+            print(f"[Henry Hub] Loaded {henry_mc_values.size} marginal cost samples.")
+    except Exception as exc:
+        # Fall back gracefully if the file is missing or malformed.
+        marginal_cost_sampler = None
+        if args.verbose:
+            print(
+                f"[Henry Hub] Failed to load marginal cost distribution ({exc}); "
+                "falling back to LMP-inferred marginal cost."
+            )
+
     # Per-agent deterministic policies used when policies are frozen.
     # Each is a mapping: StateKey -> action_index
     agent_policies: List[dict] = [{} for _ in agents]
 
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
-
-    ##agent = TabularQLearningAgent(num_actions=action_space.n_actions)
-
-    ##if seed is not None and hasattr(agent, "seed"):
-      ##  agent.seed(seed)
-
-    marginal_cost = float(market_model.params.marginal_cost)
-    cost_plus_policy = CostPlusMarkupPolicy(
-        action_space=action_space,
-        marginal_cost=marginal_cost,
-        markup=float(args.markup),
-        quantity_mw=MAX_BID_QUANTITY_MW,
-    )
 
     episode_logs: list[dict] = []
 
@@ -427,6 +494,23 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
+            # Sample marginal cost for this step (if sampler is available) and
+            # update both the market model and the cost-plus baseline used for
+            # warm-starting.
+            if marginal_cost_sampler is not None:
+                step_marginal_cost = float(marginal_cost_sampler(rng))
+            else:
+                step_marginal_cost = float(market_model.params.marginal_cost)
+
+            market_model.params.marginal_cost = step_marginal_cost
+
+            cost_plus_policy = CostPlusMarkupPolicy(
+                action_space=action_space,
+                marginal_cost=step_marginal_cost,
+                markup=float(args.markup),
+                quantity_mw=MAX_BID_QUANTITY_MW,
+            )
+
             temp = get_episode_temperature(ep_idx)
             ts = state.timestamps[state.ptr]
             step_obs: Observation = {
