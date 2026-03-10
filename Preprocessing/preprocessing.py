@@ -7,7 +7,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT /  "Preprocessing" / "raw_data"
 OUTPUT_ROOT = ROOT
 
-## Mapper - technology -> fuel
+## Fuel Mix Mapper - Fuel -> More Specific Fuel
+FUEL_MIX_RENAME = {
+    'Biomass':  'Biomass',
+    'Coal':     'Coal',
+    'Gas':      'Natural Gas',
+    'Gas-CC':   'Natural Gas',
+    'Hydro':    'Hydro',
+    'Nuclear':  'Nuclear',
+    'Other':    'Other',
+    'Solar':    'Solar',
+    'WSL':      'Other',
+    'Wind':     'Wind',
+}
+
+## Active Generator Mapper - technology -> fuel
 TECHNOLOGY_MAP = {
     # Natural Gas
     'Natural Gas Fired Combined Cycle':        'Natural Gas',
@@ -31,24 +45,24 @@ TECHNOLOGY_MAP = {
     'Conventional Hydroelectric':              'Hydro',
     'Run-of-River Hydroelectric':              'Hydro',
     'Pumped Storage':                          'Hydro',
-    # Storage
-    'Batteries':                               'Battery Storage',
-    'Flywheels':                               'Battery Storage',
+    # Storage - map to Other
+    'Batteries':                               'Other',
+    'Flywheels':                               'Other',
     # Other
-    'Petroleum Liquids':                       'Oil',
-    'Petroleum Coke':                          'Oil',
+    'Petroleum Liquids':                       'Other',
+    'Petroleum Coke':                          'Other',
     'Landfill Gas':                            'Biomass',
     'Wood/Wood Waste Biomass':                 'Biomass',
     'Other Waste Biomass':                     'Biomass',
-    'Geothermal':                              'Geothermal',
+    'Geothermal':                              'Other',
     'Natural Gas with Compressed Air Storage': 'Natural Gas',
     'Other Gases':                             'Other',
     'Hydrokinetic':                            'Other',
     'All Other':                               'Other',
 }
 
-def map_technology(tech: str) -> str:
-    return TECHNOLOGY_MAP.get(tech, 'Other')
+def map_technology(tech: str, mapping: dict = TECHNOLOGY_MAP) -> str:
+    return mapping.get(tech, 'Other')
 
 def get_active_generators(ROOT: str,
                           OUTPUT_ROOT:str,
@@ -65,12 +79,11 @@ def get_active_generators(ROOT: str,
 
     # Load EIA 860 for nameplate capacity
     filepath_860 = ROOT / filepath_860
-    df_860 = pd.read_csv(filepath_860, header=1)
+    df_860 = pd.read_csv(filepath_860, header=2)
     df_860.columns = df_860.columns.str.strip()
-
     # Keep relevant columns
     cols_860 = {
-                'Plant Code':              'plant_code',
+                'Plant ID':              'plant_code',
                 'Plant Name':              'plant_name',
                 'Technology':              'technology',
                 'Nameplate Capacity (MW)': 'nameplate_mw',
@@ -82,7 +95,6 @@ def get_active_generators(ROOT: str,
     if len(unmapped):
         print(f"Unmapped technologies: {unmapped}")
     df_860['plant_code'] = pd.to_numeric(df_860['plant_code'], errors='coerce')
-
     # Load plant file to grab relevant ISO/NERC region
     filepath_plant = ROOT / filepath_plant
     df_plant = pd.read_csv(filepath_plant, header=1)
@@ -92,15 +104,11 @@ def get_active_generators(ROOT: str,
     if nerc_filter:
         df_plant = df_plant[df_plant['nerc_region'] == nerc_filter.upper()]
 
-
-    # Filter to operating units only (status == 'OP') + optional state filter
-    df_860 = df_860[df_860['status'] == 'OP']
+    df_860 = df_860[df_860['status'].str.contains('(OP)', na=False, regex=False)]
     df_860 = df_860.merge(df_plant, on='plant_code', how='inner')
-
     df_860['plant_code'] = pd.to_numeric(df_860['plant_code'], errors='coerce')
-    df_860['nameplate_mw'] = pd.to_numeric(df_860['nameplate_mw'], errors='coerce')
+    df_860['nameplate_mw'] = pd.to_numeric(df_860['nameplate_mw'].astype(str).str.replace(',', ''), errors='coerce')
     df_860 = df_860.dropna(subset=['plant_code', 'nameplate_mw'])
-
     df_860_nameplate = df_860.groupby('plant_code')['nameplate_mw'].sum().reset_index()
     df_860 = df_860.merge(df_860_nameplate.rename(columns={'nameplate_mw': 'nameplate_mw_total'}), on='plant_code', how='left')
     df_860['plant_code'] = pd.to_numeric(df_860['plant_code'], errors='coerce')
@@ -124,10 +132,8 @@ def get_active_generators(ROOT: str,
     merged = merged.drop(columns = "nameplate_mw")
     merged['annual_mwh'] = merged['annual_mwh'].fillna(0)
     merged = merged.drop_duplicates()
-
     merged['capacity_factor'] = merged['annual_mwh'] / (merged['nameplate_mw_total'] * 8760)
     merged = merged[merged['capacity_factor'] >= capacity_factor_threshold]
-
     # --- Build output dictionary ---
     output_dict = {}
     for _, row in merged.iterrows():
@@ -198,6 +204,8 @@ def load_fuel_mix_raw(ROOT: str,
 def preprocess_fuel_mix(OUTPUT_ROOT: str,
                     OUTPUT_FILE_NAME: str,
                     combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.rename(columns=lambda col: map_technology(col, FUEL_MIX_RENAME))
+    combined = combined.groupby(level=0, axis=1).sum()
     combined_pos = combined.clip(lower=0)
     total = combined_pos.sum(axis=1)
     pct = combined_pos.div(total, axis=0)
@@ -216,11 +224,11 @@ def parse_args():
                    default="IntGenbyFuel20252026.csv", help="Used if data exists")
     p.add_argument('--fuel_mix_pct_output',
                    default="fuel_mix_2025_2026_ercot.csv")
-    p.add_argument('--filepath_860',   default='3_1_Generator_Y2024.csv')
+    p.add_argument('--filepath_860',   default='december_generator2025.csv')
     p.add_argument('--filepath_923',   default='EIA923_Schedules_2_3_4_5_M_12_2025_20FEB2026.csv')
     p.add_argument('--filepath_plant', default='2___Plant_Y2024.csv')
     p.add_argument('--generators_output', default='active_generators_2025_ercot.csv')
-    p.add_argument('--capacity_factor_threshold', type=float, default=0.05)
+    p.add_argument('--capacity_factor_threshold', type=float, default=0.01)
     p.add_argument('--nerc_filter', default='TRE', help = "To denote the balancing authority data used")
     return p.parse_args()
 if __name__ == "__main__":
@@ -265,3 +273,25 @@ if __name__ == "__main__":
         print(f"Total capacity: {capacity} MW")
         for fuel, cap in sorted(capacity_by_fuel.items()):
             print(f"  {fuel}: {cap} MW")
+            
+        # Validate fuel types match between fuel mix and generators
+        fuel_mix_fuels = set(result.columns) - {'Total_MW'}
+        generator_fuels = set(capacity_by_fuel.keys())
+        if fuel_mix_fuels != generator_fuels:
+            missing_in_mix = generator_fuels - fuel_mix_fuels
+            missing_in_gen = fuel_mix_fuels - generator_fuels
+            raise ValueError(
+                f"Fuel type mismatch!\n"
+                f"  In generators but not fuel mix: {missing_in_mix}\n"
+                f"  In fuel mix but not generators: {missing_in_gen}"
+            )
+
+        # Compare per-fuel column max MW against generator capacity by fuel
+        fuel_mix_merged_csv_test = fuel_mix_merged_csv.copy().rename(columns=lambda col: map_technology(col, FUEL_MIX_RENAME))
+        fuel_mix_merged_csv_test = fuel_mix_merged_csv_test.groupby(level=0, axis=1).sum()
+        fuel_mix_merged_csv_test = fuel_mix_merged_csv_test[fuel_mix_merged_csv_test.index < pd.to_datetime("2026-01-01 00:00:00")]
+        print(f"\nTotal capacity: {capacity:.2f} MW")
+        for fuel, cap in sorted(capacity_by_fuel.items()):
+            col_max = fuel_mix_merged_csv_test[fuel].max()
+            diff = cap - col_max
+            print(f"  {fuel}: generator={cap:.2f} MW | fuel_mix_peak={col_max:.2f} MW | diff={diff:.2f} MW")
