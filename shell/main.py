@@ -205,6 +205,404 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     return load_df, lmp_df
 
+def load_fuel_mix() -> pd.DataFrame:
+    """
+    Load fuel mix data at hourly resolution.
+    
+    Returns a DataFrame with columns:
+    - datetime: UTC timestamps (hourly)
+    - Total_MW: Total system load
+    - Fuel type columns (Biomass, Coal, Hydro, Natural Gas, Nuclear, Other, Solar, Wind)
+      containing proportion values that sum to ~1.0
+    """
+    fuel_mix_df = pd.read_csv("fuel_mix_2025_2026_ercot.csv")
+    fuel_mix_df["datetime"] = pd.to_datetime(fuel_mix_df["datetime"], utc=True)
+    fuel_mix_df = fuel_mix_df.sort_values("datetime")
+    return fuel_mix_df
+
+def load_active_generators() -> pd.DataFrame:
+    """
+    Load active generators data.
+    
+    Returns a DataFrame with columns:
+    - Power_Plant_ID: Unique generator ID
+    - plant_name: Generator name
+    - fuel_type: Type of fuel (Coal, Natural Gas, Hydro, etc.)
+    - capacity: Capacity in MW
+    - capacity_factor_2025: Capacity utilization factor
+    """
+    generators_df = pd.read_csv("active_generators_2025_ercot.csv")
+    return generators_df
+
+def build_opponent_agents(generators_df: pd.DataFrame) -> list[dict]:
+    """
+    Build a list of opponent "agents" from active generators.
+    
+    Each agent is a dict containing:
+    - id: Power_Plant_ID
+    - name: plant_name
+    - fuel_type: fuel type (e.g., "Coal", "Natural Gas")
+    - capacity: capacity in MW
+    - capacity_factor: capacity factor for 2025
+    
+    Args:
+        generators_df: DataFrame from load_active_generators()
+    
+    Returns:
+        List of opponent agent dicts
+    """
+    opponents = []
+    for _, row in generators_df.iterrows():
+        opponent = {
+            "id": row["Power_Plant_ID"],
+            "name": row["plant_name"],
+            "fuel_type": row["fuel_type"],
+            "capacity": float(row["capacity"]),
+            "capacity_factor": float(row["capacity_factor_2025"]),
+        }
+        opponents.append(opponent)
+    return opponents
+
+def allocate_load_to_opponents(
+    total_load: float,
+    fuel_type: str,
+    opposed_of_fuel_type: list[dict],
+) -> dict[str, float]:
+    """
+    Allocate a fuel type's share of the total load among opponents of that fuel type,
+    proportional to their capacity.
+    
+    Args:
+        total_load: Total system load in MW
+        fuel_type: The fuel type (e.g., "Coal", "Natural Gas")
+        opponents_of_fuel_type: List of opponent dicts filtered to this fuel_type
+    
+    Returns:
+        Dict mapping opponent ID to allocated load in MW
+    """
+    allocation = {}
+    
+    # If no opponents of this fuel type, return empty dict
+    if not opposed_of_fuel_type:
+        return allocation
+    
+    # Calculate total capacity of opponents of this fuel type
+    total_capacity = sum(opp["capacity"] for opp in opposed_of_fuel_type)
+    
+    if total_capacity <= 0:
+        # Distribute equally if no capacity info
+        per_opponent = total_load / len(opposed_of_fuel_type)
+        for opp in opposed_of_fuel_type:
+            allocation[opp["id"]] = per_opponent
+    else:
+        # Allocate proportional to capacity
+        for opp in opposed_of_fuel_type:
+            share = opp["capacity"] / total_capacity
+            allocated = total_load * share
+            allocation[opp["id"]] = allocated
+    
+    return allocation
+
+def segment_load_by_fuel_and_capacity(
+    load_df: pd.DataFrame,
+    fuel_mix_df: pd.DataFrame,
+    generators_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Segment historical load by fuel type (using fuel_mix) and further by generator capacity.
+    
+    For each hourly timestamp:
+    1. Use fuel_mix_df to allocate the total load to each fuel type
+    2. For each fuel type, allocate its share to individual generators based on capacity
+    
+    Args:
+        load_df: Historical load data with 'period' datetime column and HIST_LOAD_COL (total load)
+        fuel_mix_df: Fuel mix data with 'datetime' and fuel type columns
+        generators_df: Active generators data with fuel_type and capacity
+    
+    Returns:
+        DataFrame with columns:
+        - datetime: UTC timestamp
+        - opponent_id: Generator ID
+        - opponent_name: Generator name
+        - fuel_type: Generator fuel type
+        - allocated_load_mw: Load allocated to this generator
+    """
+    # Build opponent agents
+    opponents = build_opponent_agents(generators_df)
+    
+    # Group opponents by fuel type
+    opponents_by_fuel = {}
+    for opp in opponents:
+        fuel = opp["fuel_type"]
+        if fuel not in opponents_by_fuel:
+            opponents_by_fuel[fuel] = []
+        opponents_by_fuel[fuel].append(opp)
+    
+    # Merge load and fuel mix on datetime
+    load_df_copy = load_df.copy()
+    if "period" in load_df_copy.columns:
+        load_df_copy["datetime"] = load_df_copy["period"]
+    load_df_copy["datetime"] = pd.to_datetime(load_df_copy["datetime"], utc=True)
+    
+    fuel_mix_copy = fuel_mix_df.copy()
+    fuel_mix_copy["datetime"] = pd.to_datetime(fuel_mix_copy["datetime"], utc=True)
+    
+    merged = load_df_copy.merge(fuel_mix_copy, on="datetime", how="inner")
+    
+    # Segment each row
+    rows = []
+    fuel_type_cols = [col for col in fuel_mix_df.columns if col not in ["datetime", "Total_MW"]]
+    
+    for _, row in merged.iterrows():
+        dt = row["datetime"]
+        total_load = float(row.get(HIST_LOAD_COL, row.get("Total_MW", 0)))
+        
+        # For each fuel type, allocate to generators
+        for fuel_type in fuel_type_cols:
+            fuel_proportion = float(row.get(fuel_type, 0))
+            fuel_load = total_load * fuel_proportion
+            
+            # Get opponents of this fuel type
+            opps = opponents_by_fuel.get(fuel_type, [])
+            
+            # Allocate this fuel type's load among its generators
+            allocation = allocate_load_to_opponents(fuel_load, fuel_type, opps)
+            
+            for opponent_id, allocated_mw in allocation.items():
+                # Find opponent details
+                opp = next((o for o in opps if o["id"] == opponent_id), None)
+                if opp:
+                    rows.append({
+                        "datetime": dt,
+                        "opponent_id": opponent_id,
+                        "opponent_name": opp["name"],
+                        "fuel_type": fuel_type,
+                        "capacity_mw": opp["capacity"],
+                        "allocated_load_mw": allocated_mw,
+                    })
+    
+    segmented_df = pd.DataFrame(rows)
+    return segmented_df
+
+# ============================================================================
+# SUPPLY STACK AND OPPONENT BIDDING
+# ============================================================================
+# Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+SUPPLY_STACK_ORDER = ["Wind", "Solar", "Hydro", "Nuclear", "Biomass", "Coal", "Natural Gas", "Other"]
+
+def generate_opponent_bids_for_timestep(
+    timestamp: pd.Timestamp,
+    segmented_load_df: pd.DataFrame,
+    lmp_df: pd.DataFrame,
+    fuel_type_order: list[str] = None,
+    price_noise_std: float = 2.0,
+    rng: np.random.Generator | None = None,
+) -> list[dict]:
+    """
+    Generate opponent bids for a single timestep using the supply stack model.
+    
+    For each fuel type in the supply stack order:
+    1. Calculate the cumulative proportion of load up to that fuel type
+    2. Determine the price range: [LMP * cumulative_prop, LMP * (cumulative_prop + fuel_prop)]
+    3. For each opponent of that fuel type, sample a price from Gaussian in this range
+    4. Create a bid with quantity = allocated_load_mw and sampled price
+    
+    Args:
+        timestamp: UTC datetime for this timestep
+        segmented_load_df: Full segmented load data (output of segment_load_by_fuel_and_capacity)
+        lmp_df: Price data with datetime and PRICE_COL columns
+        fuel_type_order: Ordered list of fuel types (top to bottom in stack).
+                         Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        price_noise_std: Standard deviation for Gaussian price sampling
+        rng: Random number generator
+        
+    Returns:
+        List of opponent bid dicts with keys:
+        - opponent_id, opponent_name, fuel_type, bid_price, bid_quantity, allocated_load_mw
+    """
+    if fuel_type_order is None:
+        # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        fuel_type_order = SUPPLY_STACK_ORDER
+    
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    # Get LMP for this timestamp
+    ts_lmp_rows = lmp_df[lmp_df["datetime"] == timestamp]
+    if ts_lmp_rows.empty:
+        return []
+    lmp = float(ts_lmp_rows[PRICE_COL].iloc[0])
+    
+    # Filter segmented load for this timestamp
+    ts_loads = segmented_load_df[segmented_load_df["datetime"] == timestamp].copy()
+    if ts_loads.empty:
+        return []
+    
+    total_load = ts_loads["allocated_load_mw"].sum()
+    if total_load <= 0:
+        return []
+    
+    bids = []
+    cumulative_prop = 0.0
+    
+    for fuel_type in fuel_type_order:
+        fuel_data = ts_loads[ts_loads["fuel_type"] == fuel_type]
+        if fuel_data.empty:
+            continue
+        
+        fuel_total_load = fuel_data["allocated_load_mw"].sum()
+        fuel_prop = fuel_total_load / total_load
+        
+        # Price range for this fuel type in the supply stack
+        # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        price_low = lmp * cumulative_prop
+        price_high = lmp * (cumulative_prop + fuel_prop)
+        price_mid = (price_low + price_high) / 2
+        
+        # Generate bid for each opponent in this fuel type
+        for _, opp_row in fuel_data.iterrows():
+            # Sample price from Gaussian centered at midpoint of fuel type's price range
+            bid_price = float(rng.normal(price_mid, price_noise_std))
+            bid_price = float(np.clip(bid_price, price_low, price_high))
+            
+            bids.append({
+                "opponent_id": opp_row["opponent_id"],
+                "opponent_name": opp_row["opponent_name"],
+                "fuel_type": fuel_type,
+                "capacity_mw": float(opp_row["capacity_mw"]),
+                "allocated_load_mw": float(opp_row["allocated_load_mw"]),
+                "bid_price": bid_price,
+                "bid_quantity": float(opp_row["allocated_load_mw"]),
+            })
+        
+        cumulative_prop += fuel_prop
+    
+    return bids
+
+def extract_rl_bids_from_actions(
+    action_indices: list[int],
+    action_space: ActionSpace,
+) -> list[dict]:
+    """
+    Extract price and quantity bids from RL agent action indices.
+    
+    Current RL agents: Natural Gas only.
+    Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    
+    Args:
+        action_indices: List of discrete action indices (one per RL agent)
+        action_space: ActionSpace object to decode indices
+        
+    Returns:
+        List of dicts with keys: agent_idx, bid_price, bid_quantity
+    """
+    rl_bids = []
+    for agent_idx, action_idx in enumerate(action_indices):
+        price, quantity = action_space.decode_to_values(int(action_idx))
+        rl_bids.append({
+            "agent_idx": agent_idx,
+            "bid_price": float(price),
+            "bid_quantity": float(quantity),
+        })
+    return rl_bids
+
+def clear_market_with_stack_competition(
+    rl_bids: list[dict],
+    opponent_bids: list[dict],
+    total_historical_load: float,
+    clearing_price: float | None = None,
+) -> dict:
+    """
+    Clear the market using a uniform-price auction with all bids (RL + opponents).
+    
+    All bids are sorted by price descending. Bids are filled from highest price down
+    until total demand (historical load) is met. All cleared bids pay the clearing price.
+    
+    The total cleared quantity always equals total_historical_load.
+    RL agents' cleared quantities are deducted from the opponent quantities that were
+    at the top of the stack (highest price).
+    
+    Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    
+    Args:
+        rl_bids: List of RL agent bids with keys: agent_idx, bid_price, bid_quantity
+        opponent_bids: List of opponent bids with keys: opponent_id, bid_price, bid_quantity, ...
+        total_historical_load: Total system demand (sum of all historical load)
+        clearing_price: If provided, fix the clearing price (otherwise use auction price)
+        
+    Returns:
+        Dict with keys:
+        - clearing_price
+        - rl_cleared: list of cleared quantities per RL agent [q0, q1, ...]
+        - opponent_cleared: dict mapping opponent_id -> cleared quantity
+        - marginal_price: the price of the last filled bid
+        - total_cleared: sum of all cleared quantities
+    """
+    # Combine all bids with type tags
+    all_bids = []
+    for bid in rl_bids:
+        all_bids.append({
+            "type": "rl",
+            "agent_idx": bid["agent_idx"],
+            "price": float(bid["bid_price"]),
+            "quantity": float(bid["bid_quantity"]),
+        })
+    
+    for bid in opponent_bids:
+        all_bids.append({
+            "type": "opponent",
+            "opponent_id": bid["opponent_id"],
+            "price": float(bid["bid_price"]),
+            "quantity": float(bid["bid_quantity"]),
+        })
+    
+    # Sort by price descending (highest bids first)
+    all_bids.sort(key=lambda x: x["price"], reverse=True)
+    
+    # Fill bids from highest price down
+    total_cleared = 0.0
+    cleared_bids = []
+    marginal_price = 0.0
+    
+    for bid in all_bids:
+        if total_cleared >= total_historical_load:
+            break
+        
+        remaining_demand = total_historical_load - total_cleared
+        quantity_to_clear = min(bid["quantity"], remaining_demand)
+        
+        if quantity_to_clear > 1e-6:  # Only if quantity is non-negligible
+            marginal_price = bid["price"]
+            cleared_bids.append({
+                **bid,
+                "cleared_quantity": quantity_to_clear,
+            })
+            total_cleared += quantity_to_clear
+    
+    # If no clearing price was specified, use the marginal price from auction
+    if clearing_price is None:
+        clearing_price = marginal_price if marginal_price > 0 else 0.0
+    
+    # Extract results by agent
+    rl_cleared = [0.0] * len(rl_bids)
+    opponent_cleared = {bid["opponent_id"]: 0.0 for bid in opponent_bids}
+    
+    for cleared_bid in cleared_bids:
+        if cleared_bid["type"] == "rl":
+            idx = cleared_bid["agent_idx"]
+            rl_cleared[idx] = cleared_bid["cleared_quantity"]
+        else:
+            opponent_cleared[cleared_bid["opponent_id"]] = cleared_bid["cleared_quantity"]
+    
+    return {
+        "clearing_price": clearing_price,
+        "rl_cleared": rl_cleared,
+        "opponent_cleared": opponent_cleared,
+        "marginal_price": marginal_price,
+        "total_cleared": total_cleared,
+    }
+
 def infer_market_params_from_lmp(
     lmp_df: pd.DataFrame,
     price_col: str,
@@ -330,17 +728,27 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     apply_demand_scale_to_state(state, float(args.demand_scale))
     state.apply()
 
+    # Load fuel mix and generators for supply stack competition.
+    # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    fuel_mix_df = load_fuel_mix()
+    generators_df = load_active_generators()
+    segmented_load_df = segment_load_by_fuel_and_capacity(load_df, fuel_mix_df, generators_df)
+    
+    if args.verbose:
+        print(f"[Stack] Loaded {len(generators_df)} generators across {len(fuel_mix_df)} timesteps")
+        print(f"[Stack] Segmented load has {len(segmented_load_df)} opponent bid rows")
+
     if seed is not None:
         np.random.seed(seed)
+    
+    # RNG for opponent bid generation and other randomness
+    rng = np.random.default_rng(seed)
 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
     n_agents = int(getattr(args, "n_agents", 1))
     agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
-
-    # RNG for any non-agent randomness (policy inertia)
-    rng = np.random.default_rng(seed)
 
     # Per-agent deterministic policies used when policies are frozen.
     # Each is a mapping: StateKey -> action_index
@@ -461,10 +869,37 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             if pd.isna(price_val):
                 price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
         
-            # Demand for residual clearing: use realized load at delivery_time if available
-            demand_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
-            demand_mw = float(demand_mw) if pd.notna(demand_mw) else 0.0
+            # Historical load for residual clearing
+            historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            historical_load_mw = float(historical_load_mw) if pd.notna(historical_load_mw) else 0.0
 
+            # Generate opponent bids for this delivery time
+            # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+            opponent_bids = generate_opponent_bids_for_timestep(
+                delivery_time,
+                segmented_load_df,
+                lmp_df,
+                fuel_type_order=SUPPLY_STACK_ORDER,
+                price_noise_std=float(args.supply_stack_price_noise_std),
+                rng=rng,
+            )
+            
+            # Extract RL agent bids from action indices
+            rl_bids = extract_rl_bids_from_actions(action_indices, action_space)
+            
+            # Clear market with both RL and opponent bids using supply stack model
+            # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+            clearing_result = clear_market_with_stack_competition(
+                rl_bids,
+                opponent_bids,
+                total_historical_load=historical_load_mw,
+                clearing_price=None,  # Let auction determine clearing price
+            )
+            
+            clearing_price = clearing_result["clearing_price"]
+            rl_cleared = clearing_result["rl_cleared"]
+
+            # Warm start Q-values if needed
             if args.warm_start_q:
                 baseline_action_idx = int(cost_plus_policy.act(step_obs))
                 for ag in agents:
@@ -479,25 +914,23 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                             only_if_unseen=True,
                         )
 
-            clearing_price = market_model.sample_clearing_price(float(price_val))
-            out = market_model.clear_market_multi_agent_residual(
-                action_indices,
-                clearing_price=clearing_price,
-                demand_mw=demand_mw,
-                rho_min = float(args.rho_min),
-                rho_max = float(args.rho_max),
-                rho_k= float(args.rho_k),
-                rho_p0= float(args.rho_p0),
-                tie_break_random=True,
-            )
-            rewards = list(out["rewards"])
+            # Calculate rewards based on cleared quantities
+            marginal_cost = float(market_model.params.marginal_cost)
+            rewards = [
+                (clearing_price - marginal_cost) * rl_cleared[i]
+                for i in range(len(agents))
+            ]
+            
+            # Compute residual share (rho) for metrics
+            total_rl_cleared = sum(rl_cleared)
+            rho_for_metrics = total_rl_cleared / historical_load_mw if historical_load_mw > 0 else 0.0
 
             # Log Metrics
             metrics.log_step(
                 episode=ep_idx, step=step_counter, timestamp=ts,
                 action_indices=action_indices, rewards=rewards,
-                clearing_price=clearing_price, demand_mw=demand_mw,
-                rho=out["rho"], clip_infos=clip_infos,
+                clearing_price=clearing_price, demand_mw=historical_load_mw,
+                rho=rho_for_metrics, clip_infos=clip_infos,
             )
 
             if args.risk_penalty_lambda > 0.0:
@@ -508,7 +941,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                             severity = max(0.0, (orig_notional - max_notional) / max_notional)
                             if args.verbose: 
                                 print(f"[Risk Penalty] step={step_counter} | orig_notional={orig_notional:.4f} | max_notional={max_notional:.4f} | severity={severity:.4f}")
-                                
                         else:
                             severity = 0.0
                         penalty = float(args.risk_penalty_lambda * (1.0 + severity))
@@ -536,7 +968,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 print(
                     f"[EP {ep_idx+1} | Step {step_counter}] ts={ts} | "
                     f"state_key={state_key} | "
-                    f"P={out['clearing_price']:.2f} | demand={out['demand_mw']:.2f} | rho={out['rho']:.3f} | "
+                    f"P={clearing_price:.2f} | demand={historical_load_mw:.2f} | rho={rho_for_metrics:.3f} | "
                     f"actions={action_indices} | rewards={np.round(rewards, 4).tolist()} | "
                     f"cum_total_reward={cumulative_reward:.4f}"
                 )
@@ -694,6 +1126,9 @@ def parse_args():
                help="Print a progress line every N steps (0 disables).")
     
     p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
+    
+    p.add_argument("--supply_stack_price_noise_std", type=float, default=2.0,
+               help="Standard deviation for Gaussian price sampling in supply stack model.")
 
     p.add_argument("--rho_min", type=float, default=0.1, help="rho_min: residual share when price is high")
     p.add_argument("--rho_max", type=float, default=0.9, help="rho_max: residual share when price is low")
