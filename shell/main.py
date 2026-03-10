@@ -186,6 +186,7 @@ def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     lmp_df = pd.read_csv(LMP_CSV_PATH, parse_dates=["CloseDateUTC"])
     lmp_df = lmp_df.rename(columns={"CloseDateUTC": "datetime"})
+    lmp_df[PRICE_COL] = pd.to_numeric(lmp_df[PRICE_COL], errors="coerce")
     lmp_df["datetime"] = pd.to_datetime(lmp_df["datetime"], utc=True)
     lmp_df = lmp_df.loc[
         (lmp_df["datetime"] >= pd.to_datetime(START_DATE, utc=True)) &

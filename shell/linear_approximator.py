@@ -6,7 +6,7 @@ import pandas as pd
 PRICE_COL = "lmpPrice"
 HIST_LOAD_COL = "load_MWH"
 FORECAST_LOAD_COL = "forecast"
-LMP_CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
+LMP_CSV_PATH = "ercot_price.csv"
 
 class Discretizer:
     """
@@ -25,7 +25,6 @@ class Discretizer:
 
     def _fit_edges(self, s, method, sigma_k=2, high_q=0.9):
         s = s.dropna()
-
         if method == "uniform":
             return np.linspace(s.min(), s.max() + 1e-9, self.n_bins + 1)
 
