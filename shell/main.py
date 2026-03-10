@@ -998,8 +998,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             "cumulative_reward": float(cumulative_reward),
         })
 
-    # Export multi-agent metrics
-    _ = export_multi_agent_metrics(metrics)     
+    # Export multi-agent metrics if requested
+    if args.export_metrics:
+        _ = export_multi_agent_metrics(metrics)
+    
     with open("q_table.pkl", "wb") as f:
         pickle.dump([ag.Q for ag in agents], f)
 
@@ -1135,7 +1137,8 @@ def parse_args():
     p.add_argument("--rho_k", type=float, default=0.05, help="k: steepness of rho(P)")
     p.add_argument("--rho_p0", type=float, default=50.0, help="p0: switch price of rho(P)")
 
-
+    p.add_argument("--export_metrics", action="store_true", default=False,
+               help="Export metrics and plots to Analysis/Metrics/ directory (default: disabled)")
 
     return p.parse_args()
 
