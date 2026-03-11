@@ -90,6 +90,47 @@ def apply_demand_scale_to_state(state: State, scale: float) -> None:
         df[FORECAST_LOAD_COL] = df[FORECAST_LOAD_COL].astype(float) * scale
 
 
+def adjust_lmp_for_competition(
+    lmp_df: pd.DataFrame,
+    n_agents: int,
+    elasticity: float = 0.15,
+    reference_agents: int = 1,
+) -> pd.DataFrame:
+    """
+    Adjust LMP downward based on number of agents using logarithmic relationship.
+    
+    More agents in the market -> more competition -> lower prices.
+    Uses: price_multiplier = 1 / (1 + elasticity * ln(n_agents / reference_agents))
+    
+    This models diminishing returns: each additional agent drives price down slightly less.
+    
+    Args:
+        lmp_df: DataFrame with PRICE_COL column
+        n_agents: Number of RL agents competing
+        elasticity: Price elasticity to competition (0.15 = 15% price reduction per log-unit)
+                    0.0 = no adjustment, higher values = more price-sensitive to competition
+        reference_agents: Reference point (default 1 agent)
+    
+    Returns:
+        lmp_df with adjusted PRICE_COL values
+    """
+    if n_agents <= 0 or elasticity < 0:
+        return lmp_df.copy()
+    
+    if n_agents == reference_agents:
+        return lmp_df.copy()
+    
+    # Logarithmic competition adjustment
+    # More agents reduces price: multiplier decreases as n_agents increases
+    competition_log = np.log(n_agents / reference_agents)
+    price_multiplier = 1.0 / (1.0 + elasticity * competition_log)
+    
+    adjusted_df = lmp_df.copy()
+    adjusted_df[PRICE_COL] = adjusted_df[PRICE_COL] * price_multiplier
+    
+    return adjusted_df
+
+
 def get_episode_temperature(ep_idx: int) -> float | None:
     """
     Returns:
@@ -723,6 +764,21 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             setattr(args, k, v)
 
     load_df, lmp_df = load_data()
+    
+    # Adjust LMP based on number of agents (more competition -> lower prices)
+    n_agents = int(getattr(args, "n_agents", 1))
+    lmp_df = adjust_lmp_for_competition(
+        lmp_df,
+        n_agents=n_agents,
+        elasticity=float(args.lmp_competition_elasticity),
+        reference_agents=1,
+    )
+    if args.verbose and n_agents > 1:
+        original_mean = float(pd.to_numeric(load_data()[1][PRICE_COL], errors="coerce").mean())
+        adjusted_mean = float(lmp_df[PRICE_COL].mean())
+        print(f"[LMP Adjustment] n_agents={n_agents} | elasticity={args.lmp_competition_elasticity} | "
+              f"original_mean_price={original_mean:.2f} | adjusted_mean_price={adjusted_mean:.2f}")
+    
     forecast_series = _load_ercot_forecast_series()
     state, action_space, market_model = build_world(load_df, lmp_df)
     print(f"[Market Model] Inferred marginal cost: {market_model.params.marginal_cost:.4f} | price noise std: {market_model.params.price_noise_std:.4f}")
@@ -748,7 +804,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
-    n_agents = int(getattr(args, "n_agents", 1))
     agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
 
     # Per-agent deterministic policies used when policies are frozen.
@@ -1020,6 +1075,16 @@ def run_baselines(
         quantile:float,
 ):
     load_df, lmp_df = load_data()
+    
+    # Adjust LMP based on number of agents
+    n_agents = int(getattr(args, "n_agents", 1))
+    lmp_df = adjust_lmp_for_competition(
+        lmp_df,
+        n_agents=n_agents,
+        elasticity=float(args.lmp_competition_elasticity),
+        reference_agents=1,
+    )
+    
     state, action_space, market_model = build_world(load_df, lmp_df)  
     
     marginal_cost, _ = infer_market_params_from_lmp(lmp_df, PRICE_COL)
@@ -1129,6 +1194,10 @@ def parse_args():
                help="Print a progress line every N steps (0 disables).")
     
     p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
+    
+    p.add_argument("--lmp_competition_elasticity", type=float, default=0.15,
+               help="Price elasticity to competition (0=no adjustment, higher=more price-sensitive). "
+                    "Adjust LMP downward using: multiplier = 1 / (1 + elasticity * ln(n_agents))")
     
     p.add_argument("--supply_stack_price_noise_std", type=float, default=2.0,
                help="Standard deviation for Gaussian price sampling in supply stack model.")
