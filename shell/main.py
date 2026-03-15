@@ -700,10 +700,24 @@ def build_world_and_data():
 
 from typing import Any, List, Tuple, TypeAlias
 
-def build_agents(n_agents: int, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
+def build_agents(n_agents: int, learning_rates: List | None, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
     agents: List[TabularQLearningAgent] = []
+    agent_alphas: List[float] = []
+    if not learning_rates:
+        agent_alphas = [TabularQLearningAgent.alpha] * n_agents  # dataclass defulat
+    elif len(learning_rates) == 1:
+        agent_alphas = learning_rates * n_agents
+    elif len(learning_rates) == n_agents:
+        agent_alphas = learning_rates
+    else:
+        if args.verbose:
+            print(f"Incorrect number of learning rates — using defaults")
+        agent_alphas = [0.1] * n_agents
     for i in range(n_agents):
-        a = TabularQLearningAgent(num_actions=num_actions)
+        if agent_alphas is None:
+            a = TabularQLearningAgent(num_actions=num_actions)
+        else:
+            a = TabularQLearningAgent(num_actions=num_actions, alpha=agent_alphas[i])
         # If your agent has a seed() method, give each agent a different seed for tie-breaking diversity
         if seed is not None and hasattr(a, "seed"):
             a.seed(int(seed) + 1000 * i)
@@ -804,7 +818,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
-    agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
+    # Get learning rates, then build agents
+    agent_learning_rates = args.agent_learning_rates
+    agents = build_agents(n_agents, learning_rates=agent_learning_rates, num_actions=action_space.n_actions, seed=seed)
 
     # Per-agent deterministic policies used when policies are frozen.
     # Each is a mapping: StateKey -> action_index
@@ -1159,7 +1175,7 @@ def parse_args():
     p.add_argument("--temperature_decay", type=float, default=0.995)
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
     
-    # Policy-freeze / inertia options (disabled by default)
+    # Policy-freeze / inertia options (enabled by default)
     p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable periodic policy freeze: hold policies fixed for K episodes while Q updates. (default: enabled)")
     p.add_argument("--policy_freeze_k", type=int, default=5,
@@ -1194,7 +1210,12 @@ def parse_args():
                help="Print a progress line every N steps (0 disables).")
     
     p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
-    
+    p.add_argument(
+    "--agent_learning_rates", nargs="+", type=float, default=None, help=(
+        "Per-agent initial learning rates (alpha) for the harmonic schedule. "
+        "Provide one value per RL agent, e.g. --agent_learning_rates 0.1 0.05 0.2. ")
+    )
+
     p.add_argument("--lmp_competition_elasticity", type=float, default=0.15,
                help="Price elasticity to competition (0=no adjustment, higher=more price-sensitive). "
                     "Adjust LMP downward using: multiplier = 1 / (1 + elasticity * ln(n_agents))")
