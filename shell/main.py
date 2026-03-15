@@ -1,4 +1,5 @@
 import argparse
+import os
 import pandas as pd
 import numpy as np
 import pickle
@@ -38,9 +39,10 @@ FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
 FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
 
 # Henry Hub-based marginal cost configuration.
-# We use the EIA Henry Hub Natural Gas Spot Price CSV (monthly, $/MMBtu),
-# multiply by a constant heat rate to obtain $/MWh, and sample once per episode.
+# We build a marginal cost distribution from a daily Henry Hub CSV ($/MMBtu),
+# convert to $/MWh with a fixed heat rate, and sample once per step in training.
 HENRY_HUB_CSV_PATH = "Henry_Hub_Natural_Gas_Spot_Price.csv"
+HENRY_HUB_DAILY_CSV_PATH = "Henry_Hub_Natural_Gas_Spot_Price_Daily.csv"  # primary: daily data; fallback to monthly CSV if missing
 HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH = 7.5
 
 def _load_ercot_forecast_series() -> pd.Series:
@@ -84,28 +86,57 @@ def _load_ercot_forecast_series() -> pd.Series:
 
 def _load_henry_hub_marginal_cost_values() -> np.ndarray:
     """
-    Load monthly Henry Hub spot prices from the EIA CSV and convert
-    them into a vector of marginal costs in $/MWh using a fixed heat rate.
+    Load Henry Hub spot prices from a CSV and convert to marginal costs in $/MWh.
+    Used to build the distribution we sample from once per step in training.
 
-    The CSV has a small text header followed by:
-        Month,Henry Hub Natural Gas Spot Price Dollars per Million Btu
+    Primary: daily CSV (Henry_Hub_Natural_Gas_Spot_Price_Daily.csv, FRED format DATE/DHHNGSP).
+    Fallback: monthly CSV (Henry_Hub_Natural_Gas_Spot_Price.csv, EIA format).
     """
-    df = pd.read_csv(
-        HENRY_HUB_CSV_PATH,
-        skiprows=4,  # skip title / URL / timestamp / source lines
-    )
+    def _load_df(path: str, skiprows: int, date_col: str, price_col: str) -> pd.DataFrame | None:
+        if not os.path.isfile(path):
+            return None
+        try:
+            df = pd.read_csv(path, skiprows=skiprows)
+        except Exception:
+            return None
+        if date_col not in df.columns or price_col not in df.columns:
+            return None
+        df = df.rename(columns={date_col: "date", price_col: "price_per_mmbtu"})
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["price_per_mmbtu"] = pd.to_numeric(df["price_per_mmbtu"], errors="coerce")
+        df = df.dropna(subset=["date", "price_per_mmbtu"])
+        return df if not df.empty else None
 
-    df = df.rename(
-        columns={
-            "Month": "date",
-            "Henry Hub Natural Gas Spot Price Dollars per Million Btu": "price_per_mmbtu",
-        }
+    df = None
+    # Prefer daily CSV (FRED style: DATE, DHHNGSP).
+    df = _load_df(
+        HENRY_HUB_DAILY_CSV_PATH,
+        skiprows=0,
+        date_col="DATE",
+        price_col="DHHNGSP",
     )
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["price_per_mmbtu"] = pd.to_numeric(df["price_per_mmbtu"], errors="coerce")
-    df = df.dropna(subset=["date", "price_per_mmbtu"])
+    if df is None:
+        # Fall back to main CSV: try FRED daily (DATE, DHHNGSP) then EIA monthly (skip 4 lines).
+        df = _load_df(
+            HENRY_HUB_CSV_PATH,
+            skiprows=0,
+            date_col="DATE",
+            price_col="DHHNGSP",
+        )
+    if df is None:
+        df = _load_df(
+            HENRY_HUB_CSV_PATH,
+            skiprows=4,
+            date_col="Month",
+            price_col="Henry Hub Natural Gas Spot Price Dollars per Million Btu",
+        )
+    if df is None:
+        raise FileNotFoundError(
+            f"Henry Hub CSV not found or invalid. For daily data, add {HENRY_HUB_DAILY_CSV_PATH} "
+            f"(FRED format: DATE, DHHNGSP). Otherwise provide {HENRY_HUB_CSV_PATH} (EIA monthly)."
+        )
 
-    # Convert to $/MWh using a fixed heat rate; no extra O&M adder for now.
+    # Convert to $/MWh using a fixed heat rate.
     df["marginal_cost_per_mwh"] = df["price_per_mmbtu"] * float(HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH)
 
     start = pd.to_datetime(START_DATE)
@@ -113,7 +144,6 @@ def _load_henry_hub_marginal_cost_values() -> np.ndarray:
     mask = (df["date"] >= start) & (df["date"] <= end)
     mc = df.loc[mask, "marginal_cost_per_mwh"]
 
-    # If the environment window is outside the Henry Hub sample, fall back to all data.
     if mc.empty:
         mc = df["marginal_cost_per_mwh"]
 
@@ -494,9 +524,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
-            # Sample marginal cost for this step (if sampler is available) and
-            # update both the market model and the cost-plus baseline used for
-            # warm-starting.
+            # Sample marginal cost once per step from the Henry Hub distribution
+            # (daily CSV when present, else monthly). Update market model and cost-plus baseline.
             if marginal_cost_sampler is not None:
                 step_marginal_cost = float(marginal_cost_sampler(rng))
             else:
