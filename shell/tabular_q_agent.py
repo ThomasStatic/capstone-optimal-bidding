@@ -15,6 +15,7 @@ class TabularQLearningAgent:
     gamma: float = 0.99  # Discount factor
     epsilon: float = 0.1  # Exploration rate
     epsilon_decay: float = 0.995  # Decay rate for exploration
+    visit_counts: Dict[tuple, np.ndarray] = field(default_factory=dict) # counter for number of times we've hit (state, action) pair
 
     Q: Dict[StateKey, np.ndarray] = field(default_factory=dict, init=False)
     _rng: np.random.Generator = field(init=False) # used for random exploration
@@ -50,6 +51,23 @@ class TabularQLearningAgent:
                 self.Q[key].fill(float(self.warm_start_other_value))
                 self.Q[key][a0] = float(self.warm_start_q_value)
     
+    def update_visit_count(self, state, action) -> float:
+        """
+        Update visit count dict for state, action
+        """        
+        if state not in self.visit_counts:
+            self.visit_counts[state] = np.zeros(self.num_actions, dtype=np.float64)
+        self.visit_counts[state][action] += 1
+        return float(self.visit_counts[state][action])
+    
+    def harmonic_alpha(self, state_key: tuple, action_idx: int) -> float:
+        """
+        Returns the harmonic learning rate self.alpha / n where n is the current visit count for (state_key, action_idx) 
+        and self.alpha is the initial learning rate.
+        """
+        n = self.visit_counts.get(state_key, np.zeros(self.num_actions))[action_idx]
+        return self.alpha / n
+
     def warm_start_state(
             self,
             key: StateKey,
@@ -156,6 +174,8 @@ class TabularQLearningAgent:
 
     def update_q_table(self, state_key: StateKey, action: int, reward: float, next_state_key: StateKey, done: bool) -> None:
         self._ensure_state(state_key)
+        self.update_visit_count(state_key, action)   # increment first
+        alpha = self.harmonic_alpha(state_key, action) # Then generate learning rate.
         quality_current = self.Q[state_key][action]
 
         if done or next_state_key is None:
@@ -164,7 +184,7 @@ class TabularQLearningAgent:
             self._ensure_state(next_state_key)
             target = reward + self.gamma * np.max(self.Q[next_state_key])
 
-        self.Q[state_key][action] = quality_current + self.alpha * (target - quality_current)
+        self.Q[state_key][action] = quality_current + alpha * (target - quality_current)
 
     def extract_softmax_policy(self, temperature: float = 1.0) -> Dict[StateKey, np.ndarray | int]:
         policy: Dict[StateKey, np.ndarray | int] = {}
