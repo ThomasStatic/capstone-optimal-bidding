@@ -1033,6 +1033,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                     next_step_obs,
                     done,
                 )
+                # Log the alpha that was just used
+                state_key_for_alpha = obs.get("state_key") if isinstance(obs, dict) else state_key
+                if state_key_for_alpha in ag.visit_counts:
+                    metrics.log_alpha(i, ag.harmonic_alpha(state_key_for_alpha, action_indices[i]))
 
             cumulative_reward += float(np.sum(rewards))
 
@@ -1213,7 +1217,7 @@ def parse_args():
     p.add_argument(
     "--agent_learning_rates", nargs="+", type=float, default=None, help=(
         "Per-agent initial learning rates (alpha) for the harmonic schedule. "
-        "Provide one value per RL agent, e.g. --agent_learning_rates 0.1 0.05 0.2. ")
+        "Provide one value per RL agent or one value for each RL agent, e.g. --agent_learning_rates 0.1 0.05 0.2. ")
     )
 
     p.add_argument("--lmp_competition_elasticity", type=float, default=0.15,
