@@ -84,10 +84,12 @@ def _load_ercot_forecast_series() -> pd.Series:
 
     return s
 
-def _load_henry_hub_marginal_cost_values() -> np.ndarray:
+def _load_henry_hub_marginal_cost_values() -> tuple[np.ndarray, str]:
     """
     Load Henry Hub spot prices from a CSV and convert to marginal costs in $/MWh.
     Used to build the distribution we sample from once per step in training.
+
+    Returns (values, source) where source is "daily" or "monthly".
 
     Primary: daily CSV (Henry_Hub_Natural_Gas_Spot_Price_Daily.csv, FRED format DATE/DHHNGSP).
     Fallback: monthly CSV (Henry_Hub_Natural_Gas_Spot_Price.csv, EIA format).
@@ -108,6 +110,7 @@ def _load_henry_hub_marginal_cost_values() -> np.ndarray:
         return df if not df.empty else None
 
     df = None
+    source = "monthly"
     # Prefer daily CSV (FRED style: DATE, DHHNGSP).
     df = _load_df(
         HENRY_HUB_DAILY_CSV_PATH,
@@ -115,6 +118,8 @@ def _load_henry_hub_marginal_cost_values() -> np.ndarray:
         date_col="DATE",
         price_col="DHHNGSP",
     )
+    if df is not None:
+        source = "daily"
     if df is None:
         # Fall back to main CSV: try FRED daily (DATE, DHHNGSP) then EIA monthly (skip 4 lines).
         df = _load_df(
@@ -123,6 +128,8 @@ def _load_henry_hub_marginal_cost_values() -> np.ndarray:
             date_col="DATE",
             price_col="DHHNGSP",
         )
+        if df is not None:
+            source = "daily"
     if df is None:
         df = _load_df(
             HENRY_HUB_CSV_PATH,
@@ -151,7 +158,7 @@ def _load_henry_hub_marginal_cost_values() -> np.ndarray:
     values = values[np.isfinite(values)]
     if values.size == 0:
         raise ValueError("No finite marginal cost values loaded from Henry Hub CSV.")
-    return values
+    return values, source
 
 def _make_marginal_cost_sampler(values: np.ndarray):
     """
@@ -437,12 +444,12 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     # RNG for any non-agent randomness (policy inertia)
     rng = np.random.default_rng(seed)
 
-    # Build a Henry Hub-based marginal cost sampler for per-episode sampling.
+    # Build a Henry Hub-based marginal cost sampler; we sample once per step in the loop below.
     try:
-        henry_mc_values = _load_henry_hub_marginal_cost_values()
+        henry_mc_values, henry_source = _load_henry_hub_marginal_cost_values()
         marginal_cost_sampler = _make_marginal_cost_sampler(henry_mc_values)
         if args.verbose:
-            print(f"[Henry Hub] Loaded {henry_mc_values.size} marginal cost samples.")
+            print(f"[Henry Hub] Using {henry_source} CSV: {henry_mc_values.size} marginal cost samples (sample once per step).")
     except Exception as exc:
         # Fall back gracefully if the file is missing or malformed.
         marginal_cost_sampler = None
@@ -524,18 +531,20 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
-            # Sample marginal cost once per step from the Henry Hub distribution
-            # (daily CSV when present, else monthly). Update market model and cost-plus baseline.
+            # Each agent samples its own marginal cost from the Henry Hub distribution and stores it.
             if marginal_cost_sampler is not None:
-                step_marginal_cost = float(marginal_cost_sampler(rng))
+                for ag in agents:
+                    ag.current_marginal_cost = float(marginal_cost_sampler(rng))
             else:
-                step_marginal_cost = float(market_model.params.marginal_cost)
+                fallback_mc = float(market_model.params.marginal_cost)
+                for ag in agents:
+                    ag.current_marginal_cost = fallback_mc
 
-            market_model.params.marginal_cost = step_marginal_cost
-
+            # For warm-start baseline and any code that reads params, use first agent's MC.
+            market_model.params.marginal_cost = float(agents[0].current_marginal_cost)
             cost_plus_policy = CostPlusMarkupPolicy(
                 action_space=action_space,
-                marginal_cost=step_marginal_cost,
+                marginal_cost=float(agents[0].current_marginal_cost),
                 markup=float(args.markup),
                 quantity_mw=MAX_BID_QUANTITY_MW,
             )
@@ -597,11 +606,12 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 action_indices,
                 clearing_price=clearing_price,
                 demand_mw=demand_mw,
-                rho_min = float(args.rho_min),
-                rho_max = float(args.rho_max),
-                rho_k= float(args.rho_k),
-                rho_p0= float(args.rho_p0),
+                rho_min=float(args.rho_min),
+                rho_max=float(args.rho_max),
+                rho_k=float(args.rho_k),
+                rho_p0=float(args.rho_p0),
                 tie_break_random=True,
+                marginal_costs=[ag.current_marginal_cost for ag in agents],
             )
             rewards = list(out["rewards"])
 
