@@ -8,6 +8,7 @@ from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_de
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.evaluations.policy_freeze_ablation import PolicyFreezeAblationConfig, run_policy_freeze_ablation
+from shell.evaluations.elasticity_perturbation import ElasticityPerturbationConfig, run_elasticity_perturbation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -1248,6 +1249,11 @@ def parse_args():
     p.add_argument("--temperature_min", type=float, default=0.1)
     p.add_argument("--temperature_decay", type=float, default=0.995)
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
+
+    p.add_argument("--run_elasticity_perturbation", action="store_true", help="Run elasticity perturbation study and save CSV/plot.")
+    p.add_argument("--elasticity_values", type=str, default="0.0,0.05,0.1,0.15,0.2", help="Comma-separated elasticity values for competition adjustment.")
+    p.add_argument("--elasticity_out_csv", type=str, default="elasticity_perturbation.csv")
+    p.add_argument("--elasticity_out_png", type=str, default="elasticity_perturbation.png")
     
     # Policy-freeze / inertia options (enabled by default)
     p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=True,
@@ -1338,6 +1344,17 @@ if __name__ == "__main__":
         )
         run_policy_freeze_ablation(train_fn=train, args=args, cfg=cfg)
 
+    if args.run_elasticity_perturbation:
+        elasticities = [float(x.strip()) for x in args.elasticity_values.split(",") if x.strip()]
+        cfg = ElasticityPerturbationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            elasticities=elasticities,
+            out_csv=args.elasticity_out_csv,
+            out_png=args.elasticity_out_png,
+        )
+        run_elasticity_perturbation(train_fn=train, args=args, cfg=cfg)
+
     if args.plot_demand_perturbation or args.run_master_ablations:
         scales = [float(x.strip()) for x in args.demand_scales.split(",")]
         cfg = DemandPerturbationConfig(
@@ -1358,6 +1375,7 @@ if __name__ == "__main__":
     special_flags = (
         args.run_all_ablations
         or args.run_policy_freeze_ablation
+        or args.run_elasticity_perturbation
         or args.run_master_ablations
         or args.plot_demand_perturbation
     )
