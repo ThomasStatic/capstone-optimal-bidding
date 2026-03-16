@@ -114,7 +114,37 @@ Outputs include:
 
 - Learning curve plots  
 - Final reward distributions  
-- CSV summaries for statistical analysis  
+- CSV summaries for statistical analysis
+
+### 🧪 Policy Freeze K Ablation (new)
+Test how different policy freeze intervals and agent counts affect learning and final performance.
+
+```python
+python -m shell.main --run_policy_freeze_ablation \
+  --policy_freeze_ks 1,2,5 \
+  --policy_freeze_n_agents 2,5,10 \
+  --ablation_seeds 3 \
+  --ablation_episodes 300 \
+  --load_cache_path load_cache.csv
+```
+
+The output files are:
+
+- `policy_freeze_ablation.csv`
+- `policy_freeze_ablation.png`
+
+If you need quick debugging runs first:
+
+```python
+python -m shell.main --run_policy_freeze_ablation \
+  --policy_freeze_ks 1,5 \
+  --policy_freeze_n_agents 2 \
+  --ablation_seeds 1 \
+  --ablation_episodes 1 \
+  --load_cache_path load_cache.csv
+```
+
+If API loads fail, provide a local CSV fallback (default `load_cache.csv`) with `--load_cache_path`.
 
 ---
 
