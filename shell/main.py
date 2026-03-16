@@ -7,6 +7,7 @@ import pickle
 from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_demand_perturbation_sweep
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
+from shell.evaluations.policy_freeze_ablation import PolicyFreezeAblationConfig, run_policy_freeze_ablation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -292,9 +293,26 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     start = lmp_start.date().isoformat()
     end   = lmp_end.date().isoformat()
 
-    historic_load_api = ISODemandController(start, end, ISO)
-    load_df = historic_load_api.get_market_loads()
-    load_df =load_df[load_df["respondent"] == ISO].copy()
+    # Try API first; fallback to cached local CSV if available or API fails.
+    try:
+        historic_load_api = ISODemandController(start, end, ISO)
+        load_df = historic_load_api.get_market_loads()
+        load_df = load_df[load_df["respondent"] == ISO].copy()
+    except Exception as e:
+        print("[Warning] Failed to fetch market loads from API:", e)
+        if hasattr(args, "load_cache_path") and args.load_cache_path:
+            if os.path.exists(args.load_cache_path):
+                print(f"[Info] Loading cached loads from {args.load_cache_path}")
+                load_df = pd.read_csv(args.load_cache_path, parse_dates=["period"])
+            else:
+                raise RuntimeError(
+                    f"Failed to fetch loads from API and cache not found: {args.load_cache_path}"
+                )
+        else:
+            raise RuntimeError(
+                "Failed to fetch loads from API and no local cache path provided."
+            ) from e
+
     load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
     load_df = load_df.sort_values("period")
 
@@ -1216,6 +1234,11 @@ def parse_args():
         action="store_true",
         help="Run all ablation studies (warm start, risk constraint, temperature) and save CSV/plots."
     )
+    p.add_argument("--run_policy_freeze_ablation", action="store_true", help="Run policy freeze K ablation study and save CSV/plot.")
+    p.add_argument("--policy_freeze_ks", type=str, default="1,5,10,20,50", help="Comma-separated K values for policy freeze ablation.")
+    p.add_argument("--policy_freeze_out_csv", type=str, default="policy_freeze_ablation.csv")
+    p.add_argument("--policy_freeze_out_png", type=str, default="policy_freeze_ablation.png")
+    p.add_argument("--policy_freeze_n_agents", type=str, default="2", help="Comma-separated list of n_agents values for policy freeze ablation.")
     p.add_argument("--ablation_seeds", type=int, default=5)
     p.add_argument("--ablation_episodes", type=int, default=50)
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
@@ -1240,6 +1263,12 @@ def parse_args():
     default=1.0,
     help="Multiply HIST_LOAD_COL and FORECAST_LOAD_COL by this factor before discretization."
 )
+    p.add_argument(
+        "--load_cache_path",
+        type=str,
+        default="load_cache.csv",
+        help="Local CSV fallback for load data when API is unavailable.",
+    )
 
     p.add_argument(
         "--plot_demand_perturbation",
@@ -1296,6 +1325,19 @@ if __name__ == "__main__":
         )
         run_all_ablations(train_fn=train, args=args, cfg=cfg)
 
+    if args.run_policy_freeze_ablation:
+        ks = [int(x.strip()) for x in args.policy_freeze_ks.split(",") if x.strip()]
+        n_agents = [int(x.strip()) for x in args.policy_freeze_n_agents.split(",") if x.strip()]
+        cfg = PolicyFreezeAblationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            freeze_ks=ks,
+            n_agents=n_agents,
+            out_csv=args.policy_freeze_out_csv,
+            out_png=args.policy_freeze_out_png,
+        )
+        run_policy_freeze_ablation(train_fn=train, args=args, cfg=cfg)
+
     if args.plot_demand_perturbation or args.run_master_ablations:
         scales = [float(x.strip()) for x in args.demand_scales.split(",")]
         cfg = DemandPerturbationConfig(
@@ -1311,11 +1353,20 @@ if __name__ == "__main__":
             policy_path=args.eval_policy_path,
             q_table_path=args.eval_q_table_path
         )
-    
+
+    # If any special experiment mode was invoked, do not run default training.
+    special_flags = (
+        args.run_all_ablations
+        or args.run_policy_freeze_ablation
+        or args.run_master_ablations
+        or args.plot_demand_perturbation
+    )
+    if special_flags:
+        exit(0)
+
     if args.mode == "train":
         train(n_episodes=args.n_episodes)
-    
-    if args.mode == "baseline":
+    elif args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,
             n_episodes=args.n_episodes,
