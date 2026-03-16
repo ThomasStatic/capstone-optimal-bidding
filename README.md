@@ -150,6 +150,22 @@ python -m shell.main --run_policy_freeze_ablation \
 
 If API loads fail, provide a local CSV fallback (default `load_cache.csv`) with `--load_cache_path`.
 
+### 🧪 Elasticity Perturbation Ablation (new)
+Test how different competition elasticity parameters in the LMP adjustment affect reward.
+
+```python
+python -m shell.main --run_elasticity_perturbation \
+  --elasticity_values 0.0,0.05,0.1,0.15,0.2 \
+  --ablation_seeds 3 \
+  --ablation_episodes 300 \
+  --load_cache_path load_cache.csv
+```
+
+The output files are:
+
+- `elasticity_perturbation.csv`
+- `elasticity_perturbation.png`
+
 ---
 
 ## 📉 Demand Curve Perturbation Sweep
