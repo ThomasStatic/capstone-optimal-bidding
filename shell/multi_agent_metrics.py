@@ -39,11 +39,15 @@ class MetricsTracker:
         self._steps: List[StepRecord] = []
         self._episode_summaries: List[dict] = []
         self._greedy_actions: dict[int, List[int]] = defaultdict(list)
+        self._agent_alphas: dict[int, List[float]] = defaultdict(list)
 
         self._ep_rewards: dict[int, List[float]] = defaultdict(list)
 
     def log_greedy_actions(self, agent_idx: int, greedy_action: int) -> None:
         self._greedy_actions[agent_idx].append(greedy_action)
+
+    def log_alpha(self, agent_idx: int, alpha: float) -> None:
+        self._agent_alphas[agent_idx].append(alpha)
 
     def log_step(
         self,
@@ -124,6 +128,13 @@ class MetricsTracker:
                 raw_greedy = self._entropy(greedy_actions)
                 normalised_greedy = raw_greedy / max_entropy if max_entropy > 0 else 0.0
                 summary[f"agent_{self.agent_names[i]}_greedy_entropy"] = round(normalised_greedy, 4)
+
+            # Log alpha rates
+            alphas = self._agent_alphas.get(i, [])
+            if alphas:
+                summary[f"agent_{self.agent_names[i]}_mean_alpha"] = round(float(np.mean(alphas)), 6)
+                summary[f"agent_{self.agent_names[i]}_final_alpha"] = round(float(alphas[-1]), 6)
+            self._agent_alphas[i].clear()
 
             # Produce bid-action space distributions
             if self.action_space is not None:
@@ -466,9 +477,27 @@ def plot_stability(metrics, path="stability.png"):
     plt.close(fig)
     return path
 
+def plot_learning_rates(metrics, path="learning_rates.png"):
+    edf = metrics.episode_summary_df()
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for i in range(metrics.n_agents):
+        col = f"agent_{metrics.agent_names[i]}_mean_alpha"
+        if col in edf.columns:
+            ax.plot(edf.index, edf[col], label=metrics.agent_names[i],
+                    color=_agent_color(i, metrics.n_agents), linewidth=1.5)
+    ax.set(title="Mean Harmonic Learning Rate per Episode",
+           xlabel="Episode", ylabel="Alpha")
+    ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
+              loc="upper right", framealpha=0.5)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
 def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metrics", "Multi_Agent")):
     """
-    Run all exports (2 CSVs + 3 charts) into out_dir.
+    Run all exports into out_dir.
     """
     os.makedirs(out_dir, exist_ok=True)
     p = lambda fname: os.path.join(out_dir, fname)
@@ -483,5 +512,6 @@ def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metric
         "bid_dist_plot":      plot_bid_distributions(metrics,    p(f"bid_distributions_{current_time}.png")),
         "competition_csv": export_competition_csv(metrics, p(f"competition_table_{current_time}.csv")),
         "stability_csv":  export_stability_csv(metrics, p(f"stability_{current_time}.csv")),
-        "stability_plot": plot_stability(metrics,        p(f"stability_{current_time}.png"))
+        "stability_plot": plot_stability(metrics,        p(f"stability_{current_time}.png")),
+        "learning_rate_plot": plot_learning_rates(metrics, p(f"learning_rates_{current_time}.png"))
     }
