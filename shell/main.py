@@ -38,6 +38,13 @@ MAX_BID_QUANTITY_MW = 50
 FORECAST_CSV_PATH = "ERCOT - Load Forecast 2025.csv"
 FORECAST_HORIZON_HOURS = 24 * 14  # 2 weeks
 
+# Henry Hub-based marginal cost configuration.
+# We build a marginal cost distribution from a daily Henry Hub CSV ($/MMBtu),
+# convert to $/MWh with a fixed heat rate, and sample once per step in training.
+HENRY_HUB_CSV_PATH = "Henry_Hub_Natural_Gas_Spot_Price.csv"
+HENRY_HUB_DAILY_CSV_PATH = "Henry_Hub_Natural_Gas_Spot_Price_Daily.csv"  # primary: daily data; fallback to monthly CSV if missing
+HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH = 7.5
+
 def _load_ercot_forecast_series() -> pd.Series:
     """
     Returns an hourly forecast series indexed by UTC datetime, in MW.
@@ -76,6 +83,93 @@ def _load_ercot_forecast_series() -> pd.Series:
     )
 
     return s
+
+def _load_henry_hub_marginal_cost_values() -> np.ndarray:
+    """
+    Load Henry Hub spot prices from a CSV and convert to marginal costs in $/MWh.
+    Used to build the distribution we sample from once per step in training.
+
+    Primary: daily CSV (Henry_Hub_Natural_Gas_Spot_Price_Daily.csv, FRED format DATE/DHHNGSP).
+    Fallback: monthly CSV (Henry_Hub_Natural_Gas_Spot_Price.csv, EIA format).
+    """
+    def _load_df(path: str, skiprows: int, date_col: str, price_col: str) -> pd.DataFrame | None:
+        if not os.path.isfile(path):
+            return None
+        try:
+            df = pd.read_csv(path, skiprows=skiprows)
+        except Exception:
+            return None
+        if date_col not in df.columns or price_col not in df.columns:
+            return None
+        df = df.rename(columns={date_col: "date", price_col: "price_per_mmbtu"})
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["price_per_mmbtu"] = pd.to_numeric(df["price_per_mmbtu"], errors="coerce")
+        df = df.dropna(subset=["date", "price_per_mmbtu"])
+        return df if not df.empty else None
+
+    df = None
+    # Prefer daily CSV (FRED style: DATE, DHHNGSP).
+    df = _load_df(
+        HENRY_HUB_DAILY_CSV_PATH,
+        skiprows=0,
+        date_col="DATE",
+        price_col="DHHNGSP",
+    )
+    if df is None:
+        # Fall back to main CSV: try FRED daily (DATE, DHHNGSP) then EIA monthly (skip 4 lines).
+        df = _load_df(
+            HENRY_HUB_CSV_PATH,
+            skiprows=0,
+            date_col="DATE",
+            price_col="DHHNGSP",
+        )
+    if df is None:
+        df = _load_df(
+            HENRY_HUB_CSV_PATH,
+            skiprows=4,
+            date_col="Month",
+            price_col="Henry Hub Natural Gas Spot Price Dollars per Million Btu",
+        )
+    if df is None:
+        raise FileNotFoundError(
+            f"Henry Hub CSV not found or invalid. For daily data, add {HENRY_HUB_DAILY_CSV_PATH} "
+            f"(FRED format: DATE, DHHNGSP). Otherwise provide {HENRY_HUB_CSV_PATH} (EIA monthly)."
+        )
+
+    # Convert to $/MWh using a fixed heat rate.
+    df["marginal_cost_per_mwh"] = df["price_per_mmbtu"] * float(HENRY_HUB_HEAT_RATE_MMBTU_PER_MWH)
+
+    start = pd.to_datetime(START_DATE)
+    end = pd.to_datetime(END_DATE)
+    mask = (df["date"] >= start) & (df["date"] <= end)
+    mc = df.loc[mask, "marginal_cost_per_mwh"]
+
+    if mc.empty:
+        mc = df["marginal_cost_per_mwh"]
+
+    values = mc.to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ValueError("No finite marginal cost values loaded from Henry Hub CSV.")
+    return values
+
+def _make_marginal_cost_sampler(values: np.ndarray):
+    """
+    Build a simple sampler that returns a random historical marginal cost.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if values.size == 0:
+        raise ValueError("No values provided to marginal cost sampler.")
+
+    def _sample(rng: np.random.Generator | None = None) -> float:
+        if rng is None:
+            return float(np.random.choice(values))
+        idx = int(rng.integers(0, values.size))
+        return float(values[idx])
+
+    return _sample
 
 def apply_demand_scale_to_state(state: State, scale: float) -> None:
     if scale == 1.0:
@@ -343,25 +437,27 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     # RNG for any non-agent randomness (policy inertia)
     rng = np.random.default_rng(seed)
 
+    # Build a Henry Hub-based marginal cost sampler for per-episode sampling.
+    try:
+        henry_mc_values = _load_henry_hub_marginal_cost_values()
+        marginal_cost_sampler = _make_marginal_cost_sampler(henry_mc_values)
+        if args.verbose:
+            print(f"[Henry Hub] Loaded {henry_mc_values.size} marginal cost samples.")
+    except Exception as exc:
+        # Fall back gracefully if the file is missing or malformed.
+        marginal_cost_sampler = None
+        if args.verbose:
+            print(
+                f"[Henry Hub] Failed to load marginal cost distribution ({exc}); "
+                "falling back to LMP-inferred marginal cost."
+            )
+
     # Per-agent deterministic policies used when policies are frozen.
     # Each is a mapping: StateKey -> action_index
     agent_policies: List[dict] = [{} for _ in agents]
 
     if(args.verbose):
         print(f"[Risk] max_notional_q={args.max_notional_q} | price_q={price_q:.4f} | max_notional={max_notional:.4f}")
-
-    ##agent = TabularQLearningAgent(num_actions=action_space.n_actions)
-
-    ##if seed is not None and hasattr(agent, "seed"):
-      ##  agent.seed(seed)
-
-    marginal_cost = float(market_model.params.marginal_cost)
-    cost_plus_policy = CostPlusMarkupPolicy(
-        action_space=action_space,
-        marginal_cost=marginal_cost,
-        markup=float(args.markup),
-        quantity_mw=MAX_BID_QUANTITY_MW,
-    )
 
     episode_logs: list[dict] = []
 
@@ -428,6 +524,22 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
+            # Sample marginal cost once per step from the Henry Hub distribution
+            # (daily CSV when present, else monthly). Update market model and cost-plus baseline.
+            if marginal_cost_sampler is not None:
+                step_marginal_cost = float(marginal_cost_sampler(rng))
+            else:
+                step_marginal_cost = float(market_model.params.marginal_cost)
+
+            market_model.params.marginal_cost = step_marginal_cost
+
+            cost_plus_policy = CostPlusMarkupPolicy(
+                action_space=action_space,
+                marginal_cost=step_marginal_cost,
+                markup=float(args.markup),
+                quantity_mw=MAX_BID_QUANTITY_MW,
+            )
+
             temp = get_episode_temperature(ep_idx)
             ts = state.timestamps[state.ptr]
             step_obs: Observation = {
