@@ -25,6 +25,10 @@ class TabularQLearningAgent:
     warm_start_other_value: float = 0.0
     warm_start_only_if_unseen: bool = True
 
+    # Per-agent marginal cost ($/MWh) sampled each step by the training loop.
+    # Used when the market clears to compute per-agent rewards.
+    current_marginal_cost: float = 0.0
+
     def __post_init__(self):
         self._rng = np.random.default_rng()
 
