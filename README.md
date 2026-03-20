@@ -37,7 +37,7 @@ By combining **Q-Learning**, **forecasting models**, and **multi-agent game-theo
 
 ### 2. Learning Algorithms
 - **Tabular Q-Learning** baseline for interpretability.  
-- **Deep Q-Network (DQN)** extensions via `stable-baselines3` and `d3rlpy`.  
+- Optional research direction: **Deep Q-Network (DQN)** can be integrated (not required by the baseline code in this repo).  
 - Exploration strategies:
   - ε-greedy  
   - Boltzmann (Softmax) exploration  
@@ -69,6 +69,10 @@ By combining **Q-Learning**, **forecasting models**, and **multi-agent game-theo
 ```bash
 git clone https://github.com/<your-username>/capstone-optimal-bidding.git
 cd capstone-optimal-bidding
+python -m venv .venv
+.venv\Scripts\Activate.ps1   # Windows PowerShell
+# or source .venv/bin/activate # macOS/Linux
+pip install -U pip
 pip install -r requirements.txt
 ```
 
