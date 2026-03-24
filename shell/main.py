@@ -967,8 +967,18 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
     
-    episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
+    # Safety margin: ensure delivery_time lookups (24 hours ahead) won't exceed data bounds
+    # Each episode window is window_size (336 hours), and within it we look 24 hours ahead for delivery
+    safety_margin_hours = 48  # Extra buffer beyond window_size
+    max_safe_start = len(state.raw_state_data) - state.window_size - safety_margin_hours
+    
+    episode_starts = list(range(0, max_safe_start + 1, state.step_hours))
     episode_starts = episode_starts[:n_episodes] # Limit to n_episodes
+    
+    if args.verbose:
+        print(f"[Episode Boundary] raw_data_len={len(state.raw_state_data)} | "
+              f"window_size={state.window_size} | safety_margin={safety_margin_hours} | "
+              f"max_safe_start={max_safe_start} | total_valid_episodes={len(episode_starts)}")
 
     for ep_idx, start_idx in enumerate(episode_starts):
         if args.verbose:
@@ -1064,7 +1074,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             if delivery_time not in state.raw_state_data.index:
                 # If we don't have data for the delivery time, end episode
-                print(f"  No data for delivery time {delivery_time}, ending episode.")
+                if args.verbose:
+                    print(f"  [Data Boundary] delivery_time {delivery_time} not in data index, ending episode.")
                 done = True
                 break
 
@@ -1072,11 +1083,27 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             price_val = delivery_row.get(PRICE_COL, np.nan)
             if pd.isna(price_val):
-                price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
+                # Try to find a valid price from recent history in lmp_df
+                valid_prices = lmp_df[PRICE_COL].dropna()
+                if not valid_prices.empty:
+                    price_val = float(valid_prices.iloc[-1]) # Fallback to last known valid price
+                else:
+                    # No valid price available, end episode
+                    if args.verbose:
+                        print(f"  [Data Boundary] No valid price available for {delivery_time}, ending episode.")
+                    done = True
+                    break
         
             # Historical load for residual clearing
             historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
-            historical_load_mw = float(historical_load_mw) if pd.notna(historical_load_mw) else 0.0
+            if pd.isna(historical_load_mw):
+                # No valid load data for this delivery time - approaching data boundary
+                if args.verbose:
+                    print(f"  [Data Boundary] No load data available for {delivery_time}, ending episode.")
+                done = True
+                break
+            
+            historical_load_mw = float(historical_load_mw)
 
             # Generate opponent bids for this delivery time
             # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
@@ -1092,6 +1119,14 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             # Extract RL agent bids from action indices
             rl_bids = extract_rl_bids_from_actions(action_indices, action_space)
             
+            # Safety check: if we have no opponent bids, it likely means we're at the data boundary
+            if not opponent_bids and historical_load_mw > 0:
+                if args.verbose:
+                    print(f"  [Data Integrity Warning] No opponent bids for {delivery_time} (load={historical_load_mw:.1f} MW exists) - "
+                          "likely approaching end of market data. Ending episode.")
+                done = True
+                break
+            
             # Clear market with both RL and opponent bids using supply stack model
             # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
             clearing_result = clear_market_with_stack_competition(
@@ -1103,6 +1138,14 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             
             clearing_price = clearing_result["clearing_price"]
             rl_cleared = clearing_result["rl_cleared"]
+            
+            # Additional safety check: if clearing_price is $0 and we have real load, something's wrong
+            if clearing_price <= 0.0 and historical_load_mw > 1.0:
+                if args.verbose:
+                    print(f"  [Data Integrity Warning] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
+                          "market may have failed to clear properly. Using fallback price.")
+                # Use the LMP price as fallback for clearing (this ensures agents get compensated)
+                clearing_price = max(float(price_val), 1.0)  # At least $1/MWh to avoid $0 scenario
 
             # Warm start Q-values if needed
             if args.warm_start_q:
