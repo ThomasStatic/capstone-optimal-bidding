@@ -1308,9 +1308,6 @@ def parse_args():
     
     p.add_argument("--supply_stack_price_noise_std", type=float, default=2.0,
                help="Standard deviation for Gaussian price sampling in supply stack model.")
-    
-    p.add_argument("--supply_stack_price_noise_std", type=float, default=2.0,
-               help="Standard deviation for Gaussian price sampling in supply stack model.")
 
     p.add_argument("--rho_min", type=float, default=0.1, help="rho_min: residual share when price is high")
     p.add_argument("--rho_max", type=float, default=0.9, help="rho_max: residual share when price is low")
