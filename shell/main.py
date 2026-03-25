@@ -1373,7 +1373,7 @@ def parse_args():
 
     p.add_argument("--run_cumulative_reward_n_agent_ablation", action="store_true", help="Run cumulative reward per n agent's ablation study and save CSV/plot.")
     p.add_argument("--cumulative_reward_n_agents", type=str, default="1,2,5,10,100,1000", help="Comma-separated list of n_agents values for cumulative reward per n agent's ablation.")
-    p.add_argument("--cumulative_reward_n_agent_ks", type=str, default="1,5,10,20,50", help="Comma-separated K values for cumulative reward per n agent's ablation.")
+    p.add_argument("--cumulative_reward_n_agent_ks", type=str, default="5", help="Comma-separated K values for cumulative reward per n agent's ablation.")
     p.add_argument("--cumulative_reward_n_agent_out_csv", type=str, default="cumulative_reward_n_agent_ablation.csv")
     p.add_argument("--cumulative_reward_n_agent_out_png", type=str, default="cumulative_reward_n_agent_ablation.png")
 

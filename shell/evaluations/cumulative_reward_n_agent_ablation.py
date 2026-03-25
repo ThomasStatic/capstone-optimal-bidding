@@ -38,15 +38,18 @@ def run_cumulative_reward_n_agent_ablation(
             for s in range(cfg.seeds):
                 run_num += 1
                 elapsed = time.time() - started_at
-                avg = elapsed / run_num
-                remain = avg * (total_runs - run_num)
+                if run_num == 1:
+                    avg = 0.0
+                else:
+                    avg = elapsed / (run_num-1)
+                remain = avg * (total_runs - run_num + 1)
                 remain_str = time.strftime("%H:%M:%S", time.gmtime(remain))
 
                 print(
                     f"\n========== Cumulative Reward for N agents Ablation Run {run_num}/{total_runs} (ETA {remain_str}) =========="
                 )
                 print(
-                    f"agent_run={s+1}/{cfg.seeds} | agents={n_agents} | freeze_k={k} | seed={s} | episodes={cfg.episodes}"
+                    f"agent_run={s+1}/{cfg.seeds} | agents={n_agents} | freeze_k={k} | seed={s+1} | episodes={cfg.episodes}"
                 )
 
                 overrides = {
