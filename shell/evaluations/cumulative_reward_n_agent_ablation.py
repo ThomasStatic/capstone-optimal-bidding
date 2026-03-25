@@ -53,7 +53,8 @@ def run_cumulative_reward_n_agent_ablation(
                     "policy_freeze_k": int(k),
                     "policy_freeze_enabled": True,
                     "n_agents": int(n_agents),
-                    "n_episodes": cfg.episodes
+                    "n_episodes": cfg.episodes,
+                    "export_metrics": False
                 }
                 _, _, _, _, logs = train_fn(
                     n_episodes=cfg.episodes,

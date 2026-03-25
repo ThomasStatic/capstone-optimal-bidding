@@ -1270,7 +1270,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         })
 
     # Export multi-agent metrics
-    _ = export_multi_agent_metrics(metrics)     
+    if args.export_metrics:
+        _ = export_multi_agent_metrics(metrics)     
     with open("q_table.pkl", "wb") as f:
         pickle.dump([ag.Q for ag in agents], f)
 
@@ -1339,6 +1340,8 @@ def parse_args():
     p.add_argument("--n_episodes", type=int, default=20)
 
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    p.add_argument("--export_metrics", default=False, help="Enable verbose logging")
 
     # baseline specific
     p.add_argument("--baseline", choices=["cost_plus", "hist_quantile"], default="cost_plus")
