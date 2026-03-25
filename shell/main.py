@@ -8,6 +8,7 @@ from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_de
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
 from shell.evaluations.policy_freeze_ablation import PolicyFreezeAblationConfig, run_policy_freeze_ablation
+from shell.evaluations.cumulative_reward_n_agent_ablation import CumulativeRewardNAgentAblationConfig, run_cumulative_reward_n_agent_ablation
 from shell.evaluations.elasticity_perturbation import ElasticityPerturbationConfig, run_elasticity_perturbation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
@@ -1366,6 +1367,13 @@ def parse_args():
     p.add_argument("--policy_freeze_out_csv", type=str, default="policy_freeze_ablation.csv")
     p.add_argument("--policy_freeze_out_png", type=str, default="policy_freeze_ablation.png")
     p.add_argument("--policy_freeze_n_agents", type=str, default="2", help="Comma-separated list of n_agents values for policy freeze ablation.")
+
+    p.add_argument("--run_cumulative_reward_n_agent_ablation", action="store_true", help="Run cumulative reward per n agent's ablation study and save CSV/plot.")
+    p.add_argument("--cumulative_reward_n_agents", type=str, default="1,2,5,10,100,1000", help="Comma-separated list of n_agents values for cumulative reward per n agent's ablation.")
+    p.add_argument("--cumulative_reward_n_agent_ks", type=str, default="1,5,10,20,50", help="Comma-separated K values for cumulative reward per n agent's ablation.")
+    p.add_argument("--cumulative_reward_n_agent_out_csv", type=str, default="cumulative_reward_n_agent_ablation.csv")
+    p.add_argument("--cumulative_reward_n_agent_out_png", type=str, default="cumulative_reward_n_agent_ablation.png")
+
     p.add_argument("--ablation_seeds", type=int, default=5)
     p.add_argument("--ablation_episodes", type=int, default=50)
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
@@ -1467,6 +1475,19 @@ if __name__ == "__main__":
         )
         run_policy_freeze_ablation(train_fn=train, args=args, cfg=cfg)
 
+    if args.run_cumulative_reward_n_agent_ablation:
+        n_agents = [int(x.strip()) for x in args.cumulative_reward_n_agents.split(",") if x.strip()]
+        ks = [int(x.strip()) for x in args.cumulative_reward_n_agent_ks.split(",") if x.strip()]
+        cfg = CumulativeRewardNAgentAblationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            freeze_ks=ks,
+            n_agents=n_agents,
+            out_csv=args.cumulative_reward_n_agent_out_csv,
+            out_png=args.cumulative_reward_n_agent_out_png,
+        )
+        run_cumulative_reward_n_agent_ablation(train_fn=train, args=args, cfg=cfg)
+
     if args.run_elasticity_perturbation:
         elasticities = [float(x.strip()) for x in args.elasticity_values.split(",") if x.strip()]
         cfg = ElasticityPerturbationConfig(
@@ -1498,6 +1519,7 @@ if __name__ == "__main__":
     special_flags = (
         args.run_all_ablations
         or args.run_policy_freeze_ablation
+        or args.run_cumulative_reward_n_agent_ablation
         or args.run_elasticity_perturbation
         or args.run_master_ablations
         or args.plot_demand_perturbation
