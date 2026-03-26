@@ -712,10 +712,11 @@ def clear_market_with_stack_competition(
             "quantity": float(bid["bid_quantity"]),
         })
     
-    # Sort by price descending (highest bids first)
-    all_bids.sort(key=lambda x: x["price"], reverse=True)
+    # Sort by price ascending (cheapest supply first) for supply stack clearance.
+    # In a uniform-price generation market, lower bid prices are selected first.
+    all_bids.sort(key=lambda x: x["price"])
     
-    # Fill bids from highest price down
+    # Fill bids from cheapest to most expensive until demand is met.
     total_cleared = 0.0
     cleared_bids = []
     marginal_price = 0.0
@@ -727,7 +728,7 @@ def clear_market_with_stack_competition(
         remaining_demand = total_historical_load - total_cleared
         quantity_to_clear = min(bid["quantity"], remaining_demand)
         
-        if quantity_to_clear > 1e-6:  # Only if quantity is non-negligible
+        if quantity_to_clear > 1e-6:
             marginal_price = bid["price"]
             cleared_bids.append({
                 **bid,
@@ -735,10 +736,12 @@ def clear_market_with_stack_competition(
             })
             total_cleared += quantity_to_clear
     
-    # If no clearing price was specified, use the marginal price from auction
+    # If no clearing price was specified, use the marginal price from auction.
+    # We preserve the market equilibrium price as computed by the stack clearance,
+    # including zero/negative values when they are the true market result.
     if clearing_price is None:
-        clearing_price = marginal_price if marginal_price > 0 else 0.0
-    
+        clearing_price = marginal_price
+
     # Extract results by agent
     rl_cleared = [0.0] * len(rl_bids)
     opponent_cleared = {bid["opponent_id"]: 0.0 for bid in opponent_bids}
@@ -1139,13 +1142,19 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             clearing_price = clearing_result["clearing_price"]
             rl_cleared = clearing_result["rl_cleared"]
             
-            # Additional safety check: if clearing_price is $0 and we have real load, something's wrong
+            # Additional safety check: if clearing_price <= 0 and we have real load.
+            # Do not treat 0 price as market failure when demand is fully matched.
             if clearing_price <= 0.0 and historical_load_mw > 1.0:
-                if args.verbose:
-                    print(f"  [Data Integrity Warning] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
-                          "market may have failed to clear properly. Using fallback price.")
-                # Use the LMP price as fallback for clearing (this ensures agents get compensated)
-                clearing_price = max(float(price_val), 1.0)  # At least $1/MWh to avoid $0 scenario
+                if clearing_result["total_cleared"] < historical_load_mw - 1e-6:
+                    if args.verbose:
+                        print(f"  [Data Integrity Warning] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
+                              "market may have failed to clear properly. Using fallback price.")
+                    # Use the LMP price as fallback for clearing (this ensures agents get compensated)
+                    clearing_price = max(float(price_val), 1.0)  # At least $1/MWh to avoid $0 scenario
+                else:
+                    if args.verbose:
+                        print(f"  [Data Integrity] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
+                              "market fully cleared, accepting this price from stack result.")
 
             # Warm start Q-values if needed
             if args.warm_start_q:
