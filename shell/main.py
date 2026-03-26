@@ -712,10 +712,11 @@ def clear_market_with_stack_competition(
             "quantity": float(bid["bid_quantity"]),
         })
     
-    # Sort by price descending (highest bids first)
-    all_bids.sort(key=lambda x: x["price"], reverse=True)
+    # Sort by price ascending (cheapest supply first) for supply stack clearance.
+    # In a uniform-price generation market, lower bid prices are selected first.
+    all_bids.sort(key=lambda x: x["price"])
     
-    # Fill bids from highest price down
+    # Fill bids from cheapest to most expensive until demand is met.
     total_cleared = 0.0
     cleared_bids = []
     marginal_price = 0.0
@@ -727,7 +728,7 @@ def clear_market_with_stack_competition(
         remaining_demand = total_historical_load - total_cleared
         quantity_to_clear = min(bid["quantity"], remaining_demand)
         
-        if quantity_to_clear > 1e-6:  # Only if quantity is non-negligible
+        if quantity_to_clear > 1e-6:
             marginal_price = bid["price"]
             cleared_bids.append({
                 **bid,
