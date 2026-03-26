@@ -150,6 +150,34 @@ python -m shell.main --run_policy_freeze_ablation \
 
 If API loads fail, provide a local CSV fallback (default `load_cache.csv`) with `--load_cache_path`.
 
+### 🧪 Cumulative Reward per N Agent's Ablation (new)
+Test how different agent counts and freeze K value's affect average cumulative reward, learning and final performance.
+
+```python
+python -m shell.main --run_policy_freeze_ablation \
+  --run_cumulative_reward_n_agent_ablation \
+  --cumulative_reward_n_agents 1,5,10,100 \
+  --cumulative_reward_n_agent_ks 2,5
+  --ablation_seeds 3 \
+  --ablation_episodes 300 
+```
+
+The output files are:
+
+- `cumulative_reward_n_agent_ablation.csv`
+- `cumulative_reward_n_agent_ablation.png`
+
+If you need quick debugging runs first:
+
+```python
+python -m shell.main --run_cumulative_reward_n_agent_ablation \
+  --cumulative_reward_n_agents 2,5 \
+  --cumulative_reward_n_agent_ks 5 \
+  --ablation_seeds 1 \
+  --ablation_episodes 5 \
+  --verbose
+```
+
 ### 🧪 Elasticity Perturbation Ablation (new)
 Test how different competition elasticity parameters in the LMP adjustment affect reward.
 
