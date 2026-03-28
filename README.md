@@ -190,6 +190,30 @@ Recommended for generating the full experimental package used in reports or pape
 
 ---
 
+## 🧭 Empirical Weak-Acyclicity Test (Reduced Game)
+Run an empirical weak-acyclicity test on a finite reduced policy library induced by the simulator.
+
+```python
+python -m empirical_game.run_empirical_weak_acyclicity_test \
+  --policy_path policy.pkl \
+  --q_table_path q_table.pkl \
+  --n_agents 2 \
+  --n_rollouts 16 \
+  --eval_episodes_per_rollout 5 \
+  --show_progress \
+  --profile_progress_every 1 \
+  --rollout_progress_every 4 \
+  --epsilon 0.0 \
+  --decision_rule conservative \
+  --include_baselines \
+  --include_perturbations \
+  --output_dir Analysis/empirical_game
+```
+
+Outputs include payoff tables, unilateral deviation gains, best-reply edges, sink diagnostics, and weak-acyclicity graph summaries.
+
+---
+
 ## ⚙️ Other Useful Commands
 
 ### Train with Custom Exploration
