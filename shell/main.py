@@ -1037,18 +1037,22 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         step_counter = 0
 
         while not done:
-            # Sample marginal cost once per step from the Henry Hub distribution
-            # (daily CSV when present, else monthly). Update market model and cost-plus baseline.
+            # Each agent samples its own marginal cost from the Henry Hub distribution
+            # (daily CSV when present, else monthly) and stores it as an attribute.
             if marginal_cost_sampler is not None:
-                step_marginal_cost = float(marginal_cost_sampler(rng))
+                for ag in agents:
+                    ag.current_marginal_cost = float(marginal_cost_sampler(rng))
             else:
-                step_marginal_cost = float(market_model.params.marginal_cost)
+                fallback_mc = float(market_model.params.marginal_cost)
+                for ag in agents:
+                    ag.current_marginal_cost = fallback_mc
 
-            market_model.params.marginal_cost = step_marginal_cost
+            # Keep a single marginal_cost in the market params for any code paths that read it.
+            market_model.params.marginal_cost = float(agents[0].current_marginal_cost)
 
             cost_plus_policy = CostPlusMarkupPolicy(
                 action_space=action_space,
-                marginal_cost=step_marginal_cost,
+                marginal_cost=float(agents[0].current_marginal_cost),
                 markup=float(args.markup),
                 quantity_mw=MAX_BID_QUANTITY_MW,
             )
@@ -1171,23 +1175,31 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                             only_if_unseen=True,
                         )
 
-            # Calculate rewards based on cleared quantities
-            marginal_cost = float(market_model.params.marginal_cost)
-            rewards = [
-                (clearing_price - marginal_cost) * rl_cleared[i]
-                for i in range(len(agents))
-            ]
-            
-            # Compute residual share (rho) for metrics
-            total_rl_cleared = sum(rl_cleared)
-            rho_for_metrics = total_rl_cleared / historical_load_mw if historical_load_mw > 0 else 0.0
+            clearing_price = market_model.sample_clearing_price(float(price_val))
+            out = market_model.clear_market_multi_agent_residual(
+                action_indices,
+                clearing_price=clearing_price,
+                demand_mw=demand_mw,
+                rho_min=float(args.rho_min),
+                rho_max=float(args.rho_max),
+                rho_k=float(args.rho_k),
+                rho_p0=float(args.rho_p0),
+                tie_break_random=True,
+                marginal_costs=[ag.current_marginal_cost for ag in agents],
+            )
+            rewards = list(out["rewards"])
 
             # Log Metrics
             metrics.log_step(
-                episode=ep_idx, step=step_counter, timestamp=ts,
-                action_indices=action_indices, rewards=rewards,
-                clearing_price=clearing_price, demand_mw=historical_load_mw,
-                rho=rho_for_metrics, clip_infos=clip_infos,
+                episode=ep_idx,
+                step=step_counter,
+                timestamp=ts,
+                action_indices=action_indices,
+                rewards=rewards,
+                clearing_price=clearing_price,
+                demand_mw=historical_load_mw,
+                rho=rho_for_metrics,
+                clip_infos=clip_infos,
             )
 
             if args.risk_penalty_lambda > 0.0:

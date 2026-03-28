@@ -158,6 +158,7 @@ class MarketModel:
         rho_p0: float,
         tie_break_random: bool = True,
         eps: float = 1e-9,
+        marginal_costs: Sequence[float] | None = None,
     ) -> Dict[str, Any]:
         """
         Multi-agent clearing, pay-as-cleared, with residual demand:
@@ -200,7 +201,10 @@ class MarketModel:
             cleared[i] = take
             remaining -= take
 
-        rewards = [float(self.compute_reward(P, q)) for q in cleared]
+        if marginal_costs is not None and len(marginal_costs) == n:
+            rewards = [float((P - float(marginal_costs[i])) * cleared[i]) for i in range(n)]
+        else:
+            rewards = [float(self.compute_reward(P, q)) for q in cleared]
 
         return {
             "clearing_price": P,
