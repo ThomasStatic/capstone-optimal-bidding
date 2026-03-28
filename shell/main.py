@@ -1186,19 +1186,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             total_rl_cleared = sum(rl_cleared)
             rho_for_metrics = total_rl_cleared / historical_load_mw if historical_load_mw > 0 else 0.0
 
-            # Log Metrics
-            metrics.log_step(
-                episode=ep_idx,
-                step=step_counter,
-                timestamp=ts,
-                action_indices=action_indices,
-                rewards=rewards,
-                clearing_price=clearing_price,
-                demand_mw=historical_load_mw,
-                rho=rho_for_metrics,
-                clip_infos=clip_infos,
-            )
-
             if args.risk_penalty_lambda > 0.0:
                 for i, clip_info in enumerate(clip_infos):
                     if bool(clip_info.get("clipped", False)):                        
@@ -1211,6 +1198,19 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                             severity = 0.0
                         penalty = float(args.risk_penalty_lambda * (1.0 + severity))
                         rewards[i] -= penalty
+            
+            # Log Metrics
+            metrics.log_step(
+                episode=ep_idx,
+                step=step_counter,
+                timestamp=ts,
+                action_indices=action_indices,
+                rewards=rewards,
+                clearing_price=clearing_price,
+                demand_mw=historical_load_mw,
+                rho=rho_for_metrics,
+                clip_infos=clip_infos,
+            )
 
             next_obs, _, done, info = state.step()
             next_state_key = agents[0].state_to_key(next_obs)
