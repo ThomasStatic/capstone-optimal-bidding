@@ -37,7 +37,7 @@ By combining **Q-Learning**, **forecasting models**, and **multi-agent game-theo
 
 ### 2. Learning Algorithms
 - **Tabular Q-Learning** baseline for interpretability.  
-- **Deep Q-Network (DQN)** extensions via `stable-baselines3` and `d3rlpy`.  
+- Optional research direction: **Deep Q-Network (DQN)** can be integrated (not required by the baseline code in this repo).  
 - Exploration strategies:
   - ε-greedy  
   - Boltzmann (Softmax) exploration  
@@ -69,6 +69,10 @@ By combining **Q-Learning**, **forecasting models**, and **multi-agent game-theo
 ```bash
 git clone https://github.com/<your-username>/capstone-optimal-bidding.git
 cd capstone-optimal-bidding
+python -m venv .venv
+.venv\Scripts\Activate.ps1   # Windows PowerShell
+# or source .venv/bin/activate # macOS/Linux
+pip install -U pip
 pip install -r requirements.txt
 ```
 
@@ -114,7 +118,53 @@ Outputs include:
 
 - Learning curve plots  
 - Final reward distributions  
-- CSV summaries for statistical analysis  
+- CSV summaries for statistical analysis
+
+### 🧪 Policy Freeze K Ablation (new)
+Test how different policy freeze intervals and agent counts affect learning and final performance.
+
+```python
+python -m shell.main --run_policy_freeze_ablation \
+  --policy_freeze_ks 1,2,5 \
+  --policy_freeze_n_agents 2,5,10 \
+  --ablation_seeds 3 \
+  --ablation_episodes 300 \
+  --load_cache_path load_cache.csv
+```
+
+The output files are:
+
+- `policy_freeze_ablation.csv`
+- `policy_freeze_ablation.png`
+
+If you need quick debugging runs first:
+
+```python
+python -m shell.main --run_policy_freeze_ablation \
+  --policy_freeze_ks 1,5 \
+  --policy_freeze_n_agents 2 \
+  --ablation_seeds 1 \
+  --ablation_episodes 1 \
+  --load_cache_path load_cache.csv
+```
+
+If API loads fail, provide a local CSV fallback (default `load_cache.csv`) with `--load_cache_path`.
+
+### 🧪 Elasticity Perturbation Ablation (new)
+Test how different competition elasticity parameters in the LMP adjustment affect reward.
+
+```python
+python -m shell.main --run_elasticity_perturbation \
+  --elasticity_values 0.0,0.05,0.1,0.15,0.2 \
+  --ablation_seeds 3 \
+  --ablation_episodes 300 \
+  --load_cache_path load_cache.csv
+```
+
+The output files are:
+
+- `elasticity_perturbation.csv`
+- `elasticity_perturbation.png`
 
 ---
 

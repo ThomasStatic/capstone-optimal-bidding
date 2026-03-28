@@ -7,6 +7,8 @@ import pickle
 from shell.ablations.demand_perturbation import DemandPerturbationConfig, run_demand_perturbation_sweep
 from shell.ablations.run_all import AllAblationsConfig, run_all_ablations
 from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_ablation
+from shell.evaluations.policy_freeze_ablation import PolicyFreezeAblationConfig, run_policy_freeze_ablation
+from shell.evaluations.elasticity_perturbation import ElasticityPerturbationConfig, run_elasticity_perturbation
 from shell.api_controllers.market_loads_api import ISODemandController
 from shell.load_sarimax_projections import SARIMAXLoadProjections
 from shell.action_space import ActionSpace
@@ -186,6 +188,47 @@ def apply_demand_scale_to_state(state: State, scale: float) -> None:
         df[FORECAST_LOAD_COL] = df[FORECAST_LOAD_COL].astype(float) * scale
 
 
+def adjust_lmp_for_competition(
+    lmp_df: pd.DataFrame,
+    n_agents: int,
+    elasticity: float = 0.15,
+    reference_agents: int = 1,
+) -> pd.DataFrame:
+    """
+    Adjust LMP downward based on number of agents using logarithmic relationship.
+    
+    More agents in the market -> more competition -> lower prices.
+    Uses: price_multiplier = 1 / (1 + elasticity * ln(n_agents / reference_agents))
+    
+    This models diminishing returns: each additional agent drives price down slightly less.
+    
+    Args:
+        lmp_df: DataFrame with PRICE_COL column
+        n_agents: Number of RL agents competing
+        elasticity: Price elasticity to competition (0.15 = 15% price reduction per log-unit)
+                    0.0 = no adjustment, higher values = more price-sensitive to competition
+        reference_agents: Reference point (default 1 agent)
+    
+    Returns:
+        lmp_df with adjusted PRICE_COL values
+    """
+    if n_agents <= 0 or elasticity < 0:
+        return lmp_df.copy()
+    
+    if n_agents == reference_agents:
+        return lmp_df.copy()
+    
+    # Logarithmic competition adjustment
+    # More agents reduces price: multiplier decreases as n_agents increases
+    competition_log = np.log(n_agents / reference_agents)
+    price_multiplier = 1.0 / (1.0 + elasticity * competition_log)
+    
+    adjusted_df = lmp_df.copy()
+    adjusted_df[PRICE_COL] = adjusted_df[PRICE_COL] * price_multiplier
+    
+    return adjusted_df
+
+
 def get_episode_temperature(ep_idx: int) -> float | None:
     """
     Returns:
@@ -292,13 +335,431 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     start = lmp_start.date().isoformat()
     end   = lmp_end.date().isoformat()
 
-    historic_load_api = ISODemandController(start, end, ISO)
-    load_df = historic_load_api.get_market_loads()
-    load_df =load_df[load_df["respondent"] == ISO].copy()
+    # Try API first; fallback to cached local CSV if available or API fails.
+    try:
+        historic_load_api = ISODemandController(start, end, ISO)
+        load_df = historic_load_api.get_market_loads()
+        load_df = load_df[load_df["respondent"] == ISO].copy()
+    except Exception as e:
+        print("[Warning] Failed to fetch market loads from API:", e)
+        if hasattr(args, "load_cache_path") and args.load_cache_path:
+            if os.path.exists(args.load_cache_path):
+                print(f"[Info] Loading cached loads from {args.load_cache_path}")
+                load_df = pd.read_csv(args.load_cache_path, parse_dates=["period"])
+            else:
+                raise RuntimeError(
+                    f"Failed to fetch loads from API and cache not found: {args.load_cache_path}"
+                )
+        else:
+            raise RuntimeError(
+                "Failed to fetch loads from API and no local cache path provided."
+            ) from e
+
     load_df["period"] = pd.to_datetime(load_df["period"], utc=True)
     load_df = load_df.sort_values("period")
 
     return load_df, lmp_df
+
+def load_fuel_mix() -> pd.DataFrame:
+    """
+    Load fuel mix data at hourly resolution.
+    
+    Returns a DataFrame with columns:
+    - datetime: UTC timestamps (hourly)
+    - Total_MW: Total system load
+    - Fuel type columns (Biomass, Coal, Hydro, Natural Gas, Nuclear, Other, Solar, Wind)
+      containing proportion values that sum to ~1.0
+    """
+    fuel_mix_df = pd.read_csv("fuel_mix_2025_2026_ercot.csv")
+    fuel_mix_df["datetime"] = pd.to_datetime(fuel_mix_df["datetime"], utc=True)
+    fuel_mix_df = fuel_mix_df.sort_values("datetime")
+    return fuel_mix_df
+
+def load_active_generators() -> pd.DataFrame:
+    """
+    Load active generators data.
+    
+    Returns a DataFrame with columns:
+    - Power_Plant_ID: Unique generator ID
+    - plant_name: Generator name
+    - fuel_type: Type of fuel (Coal, Natural Gas, Hydro, etc.)
+    - capacity: Capacity in MW
+    - capacity_factor_2025: Capacity utilization factor
+    """
+    generators_df = pd.read_csv("active_generators_2025_ercot.csv")
+    return generators_df
+
+def build_opponent_agents(generators_df: pd.DataFrame) -> list[dict]:
+    """
+    Build a list of opponent "agents" from active generators.
+    
+    Each agent is a dict containing:
+    - id: Power_Plant_ID
+    - name: plant_name
+    - fuel_type: fuel type (e.g., "Coal", "Natural Gas")
+    - capacity: capacity in MW
+    - capacity_factor: capacity factor for 2025
+    
+    Args:
+        generators_df: DataFrame from load_active_generators()
+    
+    Returns:
+        List of opponent agent dicts
+    """
+    opponents = []
+    for _, row in generators_df.iterrows():
+        opponent = {
+            "id": row["Power_Plant_ID"],
+            "name": row["plant_name"],
+            "fuel_type": row["fuel_type"],
+            "capacity": float(row["capacity"]),
+            "capacity_factor": float(row["capacity_factor_2025"]),
+        }
+        opponents.append(opponent)
+    return opponents
+
+def allocate_load_to_opponents(
+    total_load: float,
+    fuel_type: str,
+    opposed_of_fuel_type: list[dict],
+) -> dict[str, float]:
+    """
+    Allocate a fuel type's share of the total load among opponents of that fuel type,
+    proportional to their capacity.
+    
+    Args:
+        total_load: Total system load in MW
+        fuel_type: The fuel type (e.g., "Coal", "Natural Gas")
+        opponents_of_fuel_type: List of opponent dicts filtered to this fuel_type
+    
+    Returns:
+        Dict mapping opponent ID to allocated load in MW
+    """
+    allocation = {}
+    
+    # If no opponents of this fuel type, return empty dict
+    if not opposed_of_fuel_type:
+        return allocation
+    
+    # Calculate total capacity of opponents of this fuel type
+    total_capacity = sum(opp["capacity"] for opp in opposed_of_fuel_type)
+    
+    if total_capacity <= 0:
+        # Distribute equally if no capacity info
+        per_opponent = total_load / len(opposed_of_fuel_type)
+        for opp in opposed_of_fuel_type:
+            allocation[opp["id"]] = per_opponent
+    else:
+        # Allocate proportional to capacity
+        for opp in opposed_of_fuel_type:
+            share = opp["capacity"] / total_capacity
+            allocated = total_load * share
+            allocation[opp["id"]] = allocated
+    
+    return allocation
+
+def segment_load_by_fuel_and_capacity(
+    load_df: pd.DataFrame,
+    fuel_mix_df: pd.DataFrame,
+    generators_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Segment historical load by fuel type (using fuel_mix) and further by generator capacity.
+    
+    For each hourly timestamp:
+    1. Use fuel_mix_df to allocate the total load to each fuel type
+    2. For each fuel type, allocate its share to individual generators based on capacity
+    
+    Args:
+        load_df: Historical load data with 'period' datetime column and HIST_LOAD_COL (total load)
+        fuel_mix_df: Fuel mix data with 'datetime' and fuel type columns
+        generators_df: Active generators data with fuel_type and capacity
+    
+    Returns:
+        DataFrame with columns:
+        - datetime: UTC timestamp
+        - opponent_id: Generator ID
+        - opponent_name: Generator name
+        - fuel_type: Generator fuel type
+        - allocated_load_mw: Load allocated to this generator
+    """
+    # Build opponent agents
+    opponents = build_opponent_agents(generators_df)
+    
+    # Group opponents by fuel type
+    opponents_by_fuel = {}
+    for opp in opponents:
+        fuel = opp["fuel_type"]
+        if fuel not in opponents_by_fuel:
+            opponents_by_fuel[fuel] = []
+        opponents_by_fuel[fuel].append(opp)
+    
+    # Merge load and fuel mix on datetime
+    load_df_copy = load_df.copy()
+    if "period" in load_df_copy.columns:
+        load_df_copy["datetime"] = load_df_copy["period"]
+    load_df_copy["datetime"] = pd.to_datetime(load_df_copy["datetime"], utc=True)
+    
+    fuel_mix_copy = fuel_mix_df.copy()
+    fuel_mix_copy["datetime"] = pd.to_datetime(fuel_mix_copy["datetime"], utc=True)
+    
+    merged = load_df_copy.merge(fuel_mix_copy, on="datetime", how="inner")
+    
+    # Segment each row
+    rows = []
+    fuel_type_cols = [col for col in fuel_mix_df.columns if col not in ["datetime", "Total_MW"]]
+    
+    for _, row in merged.iterrows():
+        dt = row["datetime"]
+        total_load = float(row.get(HIST_LOAD_COL, row.get("Total_MW", 0)))
+        
+        # For each fuel type, allocate to generators
+        for fuel_type in fuel_type_cols:
+            fuel_proportion = float(row.get(fuel_type, 0))
+            fuel_load = total_load * fuel_proportion
+            
+            # Get opponents of this fuel type
+            opps = opponents_by_fuel.get(fuel_type, [])
+            
+            # Allocate this fuel type's load among its generators
+            allocation = allocate_load_to_opponents(fuel_load, fuel_type, opps)
+            
+            for opponent_id, allocated_mw in allocation.items():
+                # Find opponent details
+                opp = next((o for o in opps if o["id"] == opponent_id), None)
+                if opp:
+                    rows.append({
+                        "datetime": dt,
+                        "opponent_id": opponent_id,
+                        "opponent_name": opp["name"],
+                        "fuel_type": fuel_type,
+                        "capacity_mw": opp["capacity"],
+                        "allocated_load_mw": allocated_mw,
+                    })
+    
+    segmented_df = pd.DataFrame(rows)
+    return segmented_df
+
+# ============================================================================
+# SUPPLY STACK AND OPPONENT BIDDING
+# ============================================================================
+# Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+SUPPLY_STACK_ORDER = ["Wind", "Solar", "Hydro", "Nuclear", "Biomass", "Coal", "Natural Gas", "Other"]
+
+def generate_opponent_bids_for_timestep(
+    timestamp: pd.Timestamp,
+    segmented_load_df: pd.DataFrame,
+    lmp_df: pd.DataFrame,
+    fuel_type_order: list[str] = None,
+    price_noise_std: float = 2.0,
+    rng: np.random.Generator | None = None,
+) -> list[dict]:
+    """
+    Generate opponent bids for a single timestep using the supply stack model.
+    
+    For each fuel type in the supply stack order:
+    1. Calculate the cumulative proportion of load up to that fuel type
+    2. Determine the price range: [LMP * cumulative_prop, LMP * (cumulative_prop + fuel_prop)]
+    3. For each opponent of that fuel type, sample a price from Gaussian in this range
+    4. Create a bid with quantity = allocated_load_mw and sampled price
+    
+    Args:
+        timestamp: UTC datetime for this timestep
+        segmented_load_df: Full segmented load data (output of segment_load_by_fuel_and_capacity)
+        lmp_df: Price data with datetime and PRICE_COL columns
+        fuel_type_order: Ordered list of fuel types (top to bottom in stack).
+                         Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        price_noise_std: Standard deviation for Gaussian price sampling
+        rng: Random number generator
+        
+    Returns:
+        List of opponent bid dicts with keys:
+        - opponent_id, opponent_name, fuel_type, bid_price, bid_quantity, allocated_load_mw
+    """
+    if fuel_type_order is None:
+        # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        fuel_type_order = SUPPLY_STACK_ORDER
+    
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    # Get LMP for this timestamp
+    ts_lmp_rows = lmp_df[lmp_df["datetime"] == timestamp]
+    if ts_lmp_rows.empty:
+        return []
+    lmp = float(ts_lmp_rows[PRICE_COL].iloc[0])
+    
+    # Filter segmented load for this timestamp
+    ts_loads = segmented_load_df[segmented_load_df["datetime"] == timestamp].copy()
+    if ts_loads.empty:
+        return []
+    
+    total_load = ts_loads["allocated_load_mw"].sum()
+    if total_load <= 0:
+        return []
+    
+    bids = []
+    cumulative_prop = 0.0
+    
+    for fuel_type in fuel_type_order:
+        fuel_data = ts_loads[ts_loads["fuel_type"] == fuel_type]
+        if fuel_data.empty:
+            continue
+        
+        fuel_total_load = fuel_data["allocated_load_mw"].sum()
+        fuel_prop = fuel_total_load / total_load
+        
+        # Price range for this fuel type in the supply stack
+        # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+        price_low = lmp * cumulative_prop
+        price_high = lmp * (cumulative_prop + fuel_prop)
+        price_mid = (price_low + price_high) / 2
+        
+        # Generate bid for each opponent in this fuel type
+        for _, opp_row in fuel_data.iterrows():
+            # Sample price from Gaussian centered at midpoint of fuel type's price range
+            bid_price = float(rng.normal(price_mid, price_noise_std))
+            bid_price = float(np.clip(bid_price, price_low, price_high))
+            
+            bids.append({
+                "opponent_id": opp_row["opponent_id"],
+                "opponent_name": opp_row["opponent_name"],
+                "fuel_type": fuel_type,
+                "capacity_mw": float(opp_row["capacity_mw"]),
+                "allocated_load_mw": float(opp_row["allocated_load_mw"]),
+                "bid_price": bid_price,
+                "bid_quantity": float(opp_row["allocated_load_mw"]),
+            })
+        
+        cumulative_prop += fuel_prop
+    
+    return bids
+
+def extract_rl_bids_from_actions(
+    action_indices: list[int],
+    action_space: ActionSpace,
+) -> list[dict]:
+    """
+    Extract price and quantity bids from RL agent action indices.
+    
+    Current RL agents: Natural Gas only.
+    Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    
+    Args:
+        action_indices: List of discrete action indices (one per RL agent)
+        action_space: ActionSpace object to decode indices
+        
+    Returns:
+        List of dicts with keys: agent_idx, bid_price, bid_quantity
+    """
+    rl_bids = []
+    for agent_idx, action_idx in enumerate(action_indices):
+        price, quantity = action_space.decode_to_values(int(action_idx))
+        rl_bids.append({
+            "agent_idx": agent_idx,
+            "bid_price": float(price),
+            "bid_quantity": float(quantity),
+        })
+    return rl_bids
+
+def clear_market_with_stack_competition(
+    rl_bids: list[dict],
+    opponent_bids: list[dict],
+    total_historical_load: float,
+    clearing_price: float | None = None,
+) -> dict:
+    """
+    Clear the market using a uniform-price auction with all bids (RL + opponents).
+    
+    All bids are sorted by price descending. Bids are filled from highest price down
+    until total demand (historical load) is met. All cleared bids pay the clearing price.
+    
+    The total cleared quantity always equals total_historical_load.
+    RL agents' cleared quantities are deducted from the opponent quantities that were
+    at the top of the stack (highest price).
+    
+    Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    
+    Args:
+        rl_bids: List of RL agent bids with keys: agent_idx, bid_price, bid_quantity
+        opponent_bids: List of opponent bids with keys: opponent_id, bid_price, bid_quantity, ...
+        total_historical_load: Total system demand (sum of all historical load)
+        clearing_price: If provided, fix the clearing price (otherwise use auction price)
+        
+    Returns:
+        Dict with keys:
+        - clearing_price
+        - rl_cleared: list of cleared quantities per RL agent [q0, q1, ...]
+        - opponent_cleared: dict mapping opponent_id -> cleared quantity
+        - marginal_price: the price of the last filled bid
+        - total_cleared: sum of all cleared quantities
+    """
+    # Combine all bids with type tags
+    all_bids = []
+    for bid in rl_bids:
+        all_bids.append({
+            "type": "rl",
+            "agent_idx": bid["agent_idx"],
+            "price": float(bid["bid_price"]),
+            "quantity": float(bid["bid_quantity"]),
+        })
+    
+    for bid in opponent_bids:
+        all_bids.append({
+            "type": "opponent",
+            "opponent_id": bid["opponent_id"],
+            "price": float(bid["bid_price"]),
+            "quantity": float(bid["bid_quantity"]),
+        })
+    
+    # Sort by price ascending (cheapest supply first) for supply stack clearance.
+    # In a uniform-price generation market, lower bid prices are selected first.
+    all_bids.sort(key=lambda x: x["price"])
+    
+    # Fill bids from cheapest to most expensive until demand is met.
+    total_cleared = 0.0
+    cleared_bids = []
+    marginal_price = 0.0
+    
+    for bid in all_bids:
+        if total_cleared >= total_historical_load:
+            break
+        
+        remaining_demand = total_historical_load - total_cleared
+        quantity_to_clear = min(bid["quantity"], remaining_demand)
+        
+        if quantity_to_clear > 1e-6:
+            marginal_price = bid["price"]
+            cleared_bids.append({
+                **bid,
+                "cleared_quantity": quantity_to_clear,
+            })
+            total_cleared += quantity_to_clear
+    
+    # If no clearing price was specified, use the marginal price from auction.
+    # We preserve the market equilibrium price as computed by the stack clearance,
+    # including zero/negative values when they are the true market result.
+    if clearing_price is None:
+        clearing_price = marginal_price
+
+    # Extract results by agent
+    rl_cleared = [0.0] * len(rl_bids)
+    opponent_cleared = {bid["opponent_id"]: 0.0 for bid in opponent_bids}
+    
+    for cleared_bid in cleared_bids:
+        if cleared_bid["type"] == "rl":
+            idx = cleared_bid["agent_idx"]
+            rl_cleared[idx] = cleared_bid["cleared_quantity"]
+        else:
+            opponent_cleared[cleared_bid["opponent_id"]] = cleared_bid["cleared_quantity"]
+    
+    return {
+        "clearing_price": clearing_price,
+        "rl_cleared": rl_cleared,
+        "opponent_cleared": opponent_cleared,
+        "marginal_price": marginal_price,
+        "total_cleared": total_cleared,
+    }
 
 def infer_market_params_from_lmp(
     lmp_df: pd.DataFrame,
@@ -356,10 +817,24 @@ def build_world_and_data():
 
 from typing import Any, List, Tuple, TypeAlias
 
-def build_agents(n_agents: int, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
+def build_agents(n_agents: int, learning_rates: List | None, num_actions: int, *, seed: int | None = None) -> List[TabularQLearningAgent]:
     agents: List[TabularQLearningAgent] = []
+    agent_alphas: List[float] = []
+    if not learning_rates:
+        agent_alphas = [TabularQLearningAgent.alpha] * n_agents  # dataclass defulat
+    elif len(learning_rates) == 1:
+        agent_alphas = learning_rates * n_agents
+    elif len(learning_rates) == n_agents:
+        agent_alphas = learning_rates
+    else:
+        if args.verbose:
+            print(f"Incorrect number of learning rates — using defaults")
+        agent_alphas = [0.1] * n_agents
     for i in range(n_agents):
-        a = TabularQLearningAgent(num_actions=num_actions)
+        if agent_alphas is None:
+            a = TabularQLearningAgent(num_actions=num_actions)
+        else:
+            a = TabularQLearningAgent(num_actions=num_actions, alpha=agent_alphas[i])
         # If your agent has a seed() method, give each agent a different seed for tie-breaking diversity
         if seed is not None and hasattr(a, "seed"):
             a.seed(int(seed) + 1000 * i)
@@ -420,19 +895,47 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             setattr(args, k, v)
 
     load_df, lmp_df = load_data()
+    
+    # Adjust LMP based on number of agents (more competition -> lower prices)
+    n_agents = int(getattr(args, "n_agents", 1))
+    lmp_df = adjust_lmp_for_competition(
+        lmp_df,
+        n_agents=n_agents,
+        elasticity=float(args.lmp_competition_elasticity),
+        reference_agents=1,
+    )
+    if args.verbose and n_agents > 1:
+        original_mean = float(pd.to_numeric(load_data()[1][PRICE_COL], errors="coerce").mean())
+        adjusted_mean = float(lmp_df[PRICE_COL].mean())
+        print(f"[LMP Adjustment] n_agents={n_agents} | elasticity={args.lmp_competition_elasticity} | "
+              f"original_mean_price={original_mean:.2f} | adjusted_mean_price={adjusted_mean:.2f}")
+    
     forecast_series = _load_ercot_forecast_series()
     state, action_space, market_model = build_world(load_df, lmp_df)
     apply_demand_scale_to_state(state, float(args.demand_scale))
     state.apply()
 
+    # Load fuel mix and generators for supply stack competition.
+    # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+    fuel_mix_df = load_fuel_mix()
+    generators_df = load_active_generators()
+    segmented_load_df = segment_load_by_fuel_and_capacity(load_df, fuel_mix_df, generators_df)
+    
+    if args.verbose:
+        print(f"[Stack] Loaded {len(generators_df)} generators across {len(fuel_mix_df)} timesteps")
+        print(f"[Stack] Segmented load has {len(segmented_load_df)} opponent bid rows")
+
     if seed is not None:
         np.random.seed(seed)
+    
+    # RNG for opponent bid generation and other randomness
+    rng = np.random.default_rng(seed)
 
     price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
     max_notional = float(MAX_BID_QUANTITY_MW * price_q)
 
-    n_agents = int(getattr(args, "n_agents", 1))
-    agents = build_agents(n_agents, num_actions=action_space.n_actions, seed=seed)
+    agent_learning_rates = args.agent_learning_rates
+    agents = build_agents(n_agents, learning_rates=agent_learning_rates, num_actions=action_space.n_actions, seed=seed)
 
     # RNG for any non-agent randomness (policy inertia)
     rng = np.random.default_rng(seed)
@@ -467,8 +970,18 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     if not isinstance(state.raw_state_data, pd.DataFrame):
         raise ValueError("State raw_state_data has not been intialized")
     
-    episode_starts = list(range(0, len(state.raw_state_data) - state.window_size + 1, state.step_hours))
+    # Safety margin: ensure delivery_time lookups (24 hours ahead) won't exceed data bounds
+    # Each episode window is window_size (336 hours), and within it we look 24 hours ahead for delivery
+    safety_margin_hours = 48  # Extra buffer beyond window_size
+    max_safe_start = len(state.raw_state_data) - state.window_size - safety_margin_hours
+    
+    episode_starts = list(range(0, max_safe_start + 1, state.step_hours))
     episode_starts = episode_starts[:n_episodes] # Limit to n_episodes
+    
+    if args.verbose:
+        print(f"[Episode Boundary] raw_data_len={len(state.raw_state_data)} | "
+              f"window_size={state.window_size} | safety_margin={safety_margin_hours} | "
+              f"max_safe_start={max_safe_start} | total_valid_episodes={len(episode_starts)}")
 
     for ep_idx, start_idx in enumerate(episode_starts):
         if args.verbose:
@@ -568,7 +1081,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             if delivery_time not in state.raw_state_data.index:
                 # If we don't have data for the delivery time, end episode
-                print(f"  No data for delivery time {delivery_time}, ending episode.")
+                if args.verbose:
+                    print(f"  [Data Boundary] delivery_time {delivery_time} not in data index, ending episode.")
                 done = True
                 break
 
@@ -576,12 +1090,77 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
 
             price_val = delivery_row.get(PRICE_COL, np.nan)
             if pd.isna(price_val):
-                price_val = float(lmp_df[PRICE_COL].iloc[-1]) # Fallback to last known price
+                # Try to find a valid price from recent history in lmp_df
+                valid_prices = lmp_df[PRICE_COL].dropna()
+                if not valid_prices.empty:
+                    price_val = float(valid_prices.iloc[-1]) # Fallback to last known valid price
+                else:
+                    # No valid price available, end episode
+                    if args.verbose:
+                        print(f"  [Data Boundary] No valid price available for {delivery_time}, ending episode.")
+                    done = True
+                    break
         
-            # Demand for residual clearing: use realized load at delivery_time if available
-            demand_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
-            demand_mw = float(demand_mw) if pd.notna(demand_mw) else 0.0
+            # Historical load for residual clearing
+            historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            if pd.isna(historical_load_mw):
+                # No valid load data for this delivery time - approaching data boundary
+                if args.verbose:
+                    print(f"  [Data Boundary] No load data available for {delivery_time}, ending episode.")
+                done = True
+                break
+            
+            historical_load_mw = float(historical_load_mw)
 
+            # Generate opponent bids for this delivery time
+            # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+            opponent_bids = generate_opponent_bids_for_timestep(
+                delivery_time,
+                segmented_load_df,
+                lmp_df,
+                fuel_type_order=SUPPLY_STACK_ORDER,
+                price_noise_std=float(args.supply_stack_price_noise_std),
+                rng=rng,
+            )
+            
+            # Extract RL agent bids from action indices
+            rl_bids = extract_rl_bids_from_actions(action_indices, action_space)
+            
+            # Safety check: if we have no opponent bids, it likely means we're at the data boundary
+            if not opponent_bids and historical_load_mw > 0:
+                if args.verbose:
+                    print(f"  [Data Integrity Warning] No opponent bids for {delivery_time} (load={historical_load_mw:.1f} MW exists) - "
+                          "likely approaching end of market data. Ending episode.")
+                done = True
+                break
+            
+            # Clear market with both RL and opponent bids using supply stack model
+            # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
+            clearing_result = clear_market_with_stack_competition(
+                rl_bids,
+                opponent_bids,
+                total_historical_load=historical_load_mw,
+                clearing_price=None,  # Let auction determine clearing price
+            )
+            
+            clearing_price = clearing_result["clearing_price"]
+            rl_cleared = clearing_result["rl_cleared"]
+            
+            # Additional safety check: if clearing_price <= 0 and we have real load.
+            # Do not treat 0 price as market failure when demand is fully matched.
+            if clearing_price <= 0.0 and historical_load_mw > 1.0:
+                if clearing_result["total_cleared"] < historical_load_mw - 1e-6:
+                    if args.verbose:
+                        print(f"  [Data Integrity Warning] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
+                              "market may have failed to clear properly. Using fallback price.")
+                    # Use the LMP price as fallback for clearing (this ensures agents get compensated)
+                    clearing_price = max(float(price_val), 1.0)  # At least $1/MWh to avoid $0 scenario
+                else:
+                    if args.verbose:
+                        print(f"  [Data Integrity] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
+                              "market fully cleared, accepting this price from stack result.")
+
+            # Warm start Q-values if needed
             if args.warm_start_q:
                 baseline_action_idx = int(cost_plus_policy.act(step_obs))
                 for ag in agents:
@@ -618,8 +1197,8 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 action_indices=action_indices,
                 rewards=rewards,
                 clearing_price=clearing_price,
-                demand_mw=demand_mw,
-                rho=out["rho"],
+                demand_mw=historical_load_mw,
+                rho=rho_for_metrics,
                 clip_infos=clip_infos,
             )
 
@@ -631,7 +1210,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                             severity = max(0.0, (orig_notional - max_notional) / max_notional)
                             if args.verbose: 
                                 print(f"[Risk Penalty] step={step_counter} | orig_notional={orig_notional:.4f} | max_notional={max_notional:.4f} | severity={severity:.4f}")
-                                
                         else:
                             severity = 0.0
                         penalty = float(args.risk_penalty_lambda * (1.0 + severity))
@@ -652,6 +1230,10 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                     next_step_obs,
                     done,
                 )
+                # Log the alpha that was just used
+                state_key_for_alpha = obs.get("state_key") if isinstance(obs, dict) else state_key
+                if state_key_for_alpha in ag.visit_counts:
+                    metrics.log_alpha(i, ag.harmonic_alpha(state_key_for_alpha, action_indices[i]))
 
             cumulative_reward += float(np.sum(rewards))
 
@@ -659,7 +1241,7 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 print(
                     f"[EP {ep_idx+1} | Step {step_counter}] ts={ts} | "
                     f"state_key={state_key} | "
-                    f"P={out['clearing_price']:.2f} | demand={out['demand_mw']:.2f} | rho={out['rho']:.3f} | "
+                    f"P={clearing_price:.2f} | demand={historical_load_mw:.2f} | rho={rho_for_metrics:.3f} | "
                     f"actions={action_indices} | rewards={np.round(rewards, 4).tolist()} | "
                     f"cum_total_reward={cumulative_reward:.4f}"
                 )
@@ -708,6 +1290,16 @@ def run_baselines(
         quantile:float,
 ):
     load_df, lmp_df = load_data()
+    
+    # Adjust LMP based on number of agents
+    n_agents = int(getattr(args, "n_agents", 1))
+    lmp_df = adjust_lmp_for_competition(
+        lmp_df,
+        n_agents=n_agents,
+        elasticity=float(args.lmp_competition_elasticity),
+        reference_agents=1,
+    )
+    
     state, action_space, market_model = build_world(load_df, lmp_df)  
     
     marginal_cost, _ = infer_market_params_from_lmp(lmp_df, PRICE_COL)
@@ -772,6 +1364,11 @@ def parse_args():
         action="store_true",
         help="Run all ablation studies (warm start, risk constraint, temperature) and save CSV/plots."
     )
+    p.add_argument("--run_policy_freeze_ablation", action="store_true", help="Run policy freeze K ablation study and save CSV/plot.")
+    p.add_argument("--policy_freeze_ks", type=str, default="1,5,10,20,50", help="Comma-separated K values for policy freeze ablation.")
+    p.add_argument("--policy_freeze_out_csv", type=str, default="policy_freeze_ablation.csv")
+    p.add_argument("--policy_freeze_out_png", type=str, default="policy_freeze_ablation.png")
+    p.add_argument("--policy_freeze_n_agents", type=str, default="2", help="Comma-separated list of n_agents values for policy freeze ablation.")
     p.add_argument("--ablation_seeds", type=int, default=5)
     p.add_argument("--ablation_episodes", type=int, default=50)
     p.add_argument("--ablation_out_csv", type=str, default="warm_start_ablation.csv")
@@ -781,8 +1378,13 @@ def parse_args():
     p.add_argument("--temperature_min", type=float, default=0.1)
     p.add_argument("--temperature_decay", type=float, default=0.995)
     p.add_argument("--risk_lambda_on", type=float, default=1.0)
+
+    p.add_argument("--run_elasticity_perturbation", action="store_true", help="Run elasticity perturbation study and save CSV/plot.")
+    p.add_argument("--elasticity_values", type=str, default="0.0,0.05,0.1,0.15,0.2", help="Comma-separated elasticity values for competition adjustment.")
+    p.add_argument("--elasticity_out_csv", type=str, default="elasticity_perturbation.csv")
+    p.add_argument("--elasticity_out_png", type=str, default="elasticity_perturbation.png")
     
-    # Policy-freeze / inertia options (disabled by default)
+    # Policy-freeze / inertia options (enabled by default)
     p.add_argument("--policy_freeze_enabled", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable periodic policy freeze: hold policies fixed for K episodes while Q updates. (default: enabled)")
     p.add_argument("--policy_freeze_k", type=int, default=5,
@@ -796,6 +1398,12 @@ def parse_args():
     default=1.0,
     help="Multiply HIST_LOAD_COL and FORECAST_LOAD_COL by this factor before discretization."
 )
+    p.add_argument(
+        "--load_cache_path",
+        type=str,
+        default="load_cache.csv",
+        help="Local CSV fallback for load data when API is unavailable.",
+    )
 
     p.add_argument(
         "--plot_demand_perturbation",
@@ -817,6 +1425,18 @@ def parse_args():
                help="Print a progress line every N steps (0 disables).")
     
     p.add_argument("--n_agents", type=int, default=2, help="Number of bidding agents.")
+    p.add_argument(
+    "--agent_learning_rates", nargs="+", type=float, default=None, help=(
+        "Per-agent initial learning rates (alpha) for the harmonic schedule. "
+        "Provide one value per RL agent or one value for each RL agent, e.g. --agent_learning_rates 0.1 0.05 0.2. ")
+    )
+
+    p.add_argument("--lmp_competition_elasticity", type=float, default=0.15,
+               help="Price elasticity to competition (0=no adjustment, higher=more price-sensitive). "
+                    "Adjust LMP downward using: multiplier = 1 / (1 + elasticity * ln(n_agents))")
+    
+    p.add_argument("--supply_stack_price_noise_std", type=float, default=2.0,
+               help="Standard deviation for Gaussian price sampling in supply stack model.")
 
     p.add_argument("--rho_min", type=float, default=0.1, help="rho_min: residual share when price is high")
     p.add_argument("--rho_max", type=float, default=0.9, help="rho_max: residual share when price is low")
@@ -837,6 +1457,30 @@ if __name__ == "__main__":
         )
         run_all_ablations(train_fn=train, args=args, cfg=cfg)
 
+    if args.run_policy_freeze_ablation:
+        ks = [int(x.strip()) for x in args.policy_freeze_ks.split(",") if x.strip()]
+        n_agents = [int(x.strip()) for x in args.policy_freeze_n_agents.split(",") if x.strip()]
+        cfg = PolicyFreezeAblationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            freeze_ks=ks,
+            n_agents=n_agents,
+            out_csv=args.policy_freeze_out_csv,
+            out_png=args.policy_freeze_out_png,
+        )
+        run_policy_freeze_ablation(train_fn=train, args=args, cfg=cfg)
+
+    if args.run_elasticity_perturbation:
+        elasticities = [float(x.strip()) for x in args.elasticity_values.split(",") if x.strip()]
+        cfg = ElasticityPerturbationConfig(
+            seeds=args.ablation_seeds,
+            episodes=args.ablation_episodes,
+            elasticities=elasticities,
+            out_csv=args.elasticity_out_csv,
+            out_png=args.elasticity_out_png,
+        )
+        run_elasticity_perturbation(train_fn=train, args=args, cfg=cfg)
+
     if args.plot_demand_perturbation or args.run_master_ablations:
         scales = [float(x.strip()) for x in args.demand_scales.split(",")]
         cfg = DemandPerturbationConfig(
@@ -852,11 +1496,21 @@ if __name__ == "__main__":
             policy_path=args.eval_policy_path,
             q_table_path=args.eval_q_table_path
         )
-    
+
+    # If any special experiment mode was invoked, do not run default training.
+    special_flags = (
+        args.run_all_ablations
+        or args.run_policy_freeze_ablation
+        or args.run_elasticity_perturbation
+        or args.run_master_ablations
+        or args.plot_demand_perturbation
+    )
+    if special_flags:
+        exit(0)
+
     if args.mode == "train":
         train(n_episodes=args.n_episodes)
-    
-    if args.mode == "baseline":
+    elif args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,
             n_episodes=args.n_episodes,
