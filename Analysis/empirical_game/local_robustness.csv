@@ -1,0 +1,9 @@
+base_profile_id,agent_id,from_policy_id,to_policy_id,gain_mean,gain_lcb,is_profitable
+a0:learned_agent_0|a1:learned_agent_1,0,learned_agent_0,learned_agent_0__price_up_1,-12109.661579415362,-12262.5886521691,False
+a0:learned_agent_0|a1:learned_agent_1,0,learned_agent_0,learned_agent_0__price_down_1,14435.49755303543,14250.551219581885,True
+a0:learned_agent_0|a1:learned_agent_1,0,learned_agent_0,learned_agent_0__quantity_up_1,14016.110301020166,13990.625890491694,True
+a0:learned_agent_0|a1:learned_agent_1,0,learned_agent_0,learned_agent_0__quantity_down_1,-14387.376565481536,-14413.271805695651,False
+a0:learned_agent_0|a1:learned_agent_1,1,learned_agent_1,learned_agent_1__price_up_1,-12529.200232535242,-12671.060965301262,False
+a0:learned_agent_0|a1:learned_agent_1,1,learned_agent_1,learned_agent_1__price_down_1,8339.145603545743,8252.966265105064,True
+a0:learned_agent_0|a1:learned_agent_1,1,learned_agent_1,learned_agent_1__quantity_up_1,13498.121372267353,13474.898307640275,True
+a0:learned_agent_0|a1:learned_agent_1,1,learned_agent_1,learned_agent_1__quantity_down_1,-13198.965715620086,-13221.830092870116,False
