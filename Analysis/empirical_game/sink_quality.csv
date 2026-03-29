@@ -1,0 +1,2 @@
+sink_profile_id,n_outgoing_deviations,n_profitable_deviations,largest_profitable_gain,max_best_response_gap
+a0:cost_plus_agent_0|a1:cost_plus_agent_1,12,0,0.0,-69038.19634988636
