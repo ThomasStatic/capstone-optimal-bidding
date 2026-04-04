@@ -6,7 +6,7 @@ import pandas as pd
 PRICE_COL = "lmpPrice"
 HIST_LOAD_COL = "load_MWH"
 FORECAST_LOAD_COL = "forecast"
-LMP_CSV_PATH = "lmp-hourly-FORMOSA_CC2-ERCOT-SPP.csv"
+LMP_CSV_PATH = "lmp-hourly-export-SMITHBURG-PJM-LMP-both_2026-03-28T2017(in).csv"
 
 class Discretizer:
     """

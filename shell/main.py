@@ -1,5 +1,6 @@
 import argparse
 import os
+from datetime import datetime
 import pandas as pd
 import numpy as np
 import pickle
@@ -31,7 +32,7 @@ from shell.tabular_q_agent import TabularQLearningAgent
 from shell.multi_agent_metrics import MetricsTracker, export_multi_agent_metrics
 from typing import TypeAlias
 
-ISO = "ERCOT"
+ISO = "PJM"
 START_DATE = "2025-01-01"
 END_DATE = "2026-01-31"
 
@@ -309,7 +310,8 @@ def inject_epsisode_forecast(state: State, forecast_df: pd.DataFrame) -> None:
         forecast_df[FORECAST_LOAD_COL] = forecast_df[FORECAST_LOAD_COL].astype(float) * float(args.demand_scale)
 
     f = forecast_df.set_index("datetime")[FORECAST_LOAD_COL]
-    df.loc[f.index, FORECAST_LOAD_COL] = f.values
+    # Align on index so mismatched lengths (e.g., missing hours) don't error.
+    df.loc[f.index, FORECAST_LOAD_COL] = f
 
 def make_action_space(lmp_df: pd.DataFrame) -> ActionSpace:
     price_disc = Discretizer(col=PRICE_COL, n_bins=NUM_DISCRETIZER_BINS)
@@ -889,6 +891,181 @@ def select_and_project_actions(
     return action_indices, clip_infos
 
 
+def run_stack_greedy_eval(
+    agents: List[TabularQLearningAgent],
+    state: State,
+    action_space: ActionSpace,
+    market_model: MarketModel,
+    lmp_df: pd.DataFrame,
+    forecast_series: pd.Series,
+    segmented_load_df: pd.DataFrame,
+    episode_starts: List[int],
+    rng: np.random.Generator,
+    marginal_cost_sampler,
+    max_notional: float,
+) -> MetricsTracker:
+    """
+    Fixed greedy policies from current Q (no updates), same episode boundaries as train().
+    Use this row's metrics — not the training rollout — when comparing to stack baselines.
+    """
+    n_agents = len(agents)
+    metrics = MetricsTracker(
+        n_agents=n_agents,
+        agent_names=[f"RL_Agent_{i}" for i in range(n_agents)],
+        action_space=action_space,
+    )
+    agent_policies = [ag.extract_policy(temperature=1e-6) for ag in agents]
+    greedy_temp = 1e-6
+
+    for ep_idx, start_idx in enumerate(episode_starts):
+        state.episode_start = start_idx
+        episode_start_ts = state.raw_state_data.index[start_idx]
+
+        h_end = episode_start_ts + pd.Timedelta(hours=FORECAST_HORIZON_HOURS)
+        f_slice = forecast_series.loc[
+            (forecast_series.index >= episode_start_ts) & (forecast_series.index <= h_end)
+        ]
+        forecast_df = f_slice.rename(FORECAST_LOAD_COL).reset_index()
+        inject_epsisode_forecast(state, forecast_df)
+        state.apply()
+        obs = state.reset(new_episode=False)
+        state_key = agents[0].state_to_key(obs)
+
+        done = False
+        step_counter = 0
+
+        while not done:
+            if marginal_cost_sampler is not None:
+                for ag in agents:
+                    ag.current_marginal_cost = float(marginal_cost_sampler(rng))
+            else:
+                fallback_mc = float(market_model.params.marginal_cost)
+                for ag in agents:
+                    ag.current_marginal_cost = fallback_mc
+
+            market_model.params.marginal_cost = float(agents[0].current_marginal_cost)
+
+            ts = state.timestamps[state.ptr]
+            step_obs: Observation = {
+                "timestamp": ts,
+                "state_key": state_key,
+                "temperature": greedy_temp,
+            }
+
+            action_indices, clip_infos = select_and_project_actions(
+                agents,
+                step_obs,
+                action_space,
+                max_quantity=MAX_BID_QUANTITY_MW,
+                max_notional=max_notional,
+                frozen=True,
+                agent_policies=agent_policies,
+                rng=rng,
+            )
+
+            delivery_time = ts + pd.Timedelta(hours=24)
+
+            if delivery_time not in state.raw_state_data.index:
+                done = True
+                break
+
+            delivery_row = state.raw_state_data.loc[delivery_time]
+
+            price_val = delivery_row.get(PRICE_COL, np.nan)
+            if isinstance(price_val, (pd.Series, np.ndarray)):
+                price_val = float(price_val.iloc[0]) if len(price_val) > 0 else np.nan
+            if pd.isna(price_val):
+                valid_prices = lmp_df[PRICE_COL].dropna()
+                if not valid_prices.empty:
+                    price_val = float(valid_prices.iloc[-1])
+                else:
+                    done = True
+                    break
+
+            historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            if isinstance(historical_load_mw, (pd.Series, np.ndarray)):
+                historical_load_mw = (
+                    float(historical_load_mw.iloc[0]) if len(historical_load_mw) > 0 else np.nan
+                )
+            if pd.isna(historical_load_mw):
+                done = True
+                break
+
+            historical_load_mw = float(historical_load_mw)
+
+            opponent_bids = generate_opponent_bids_for_timestep(
+                delivery_time,
+                segmented_load_df,
+                lmp_df,
+                fuel_type_order=SUPPLY_STACK_ORDER,
+                price_noise_std=float(args.supply_stack_price_noise_std),
+                rng=rng,
+            )
+            rl_bids = extract_rl_bids_from_actions(action_indices, action_space)
+
+            if not opponent_bids and historical_load_mw > 0:
+                done = True
+                break
+
+            clearing_result = clear_market_with_stack_competition(
+                rl_bids,
+                opponent_bids,
+                total_historical_load=historical_load_mw,
+                clearing_price=None,
+            )
+
+            clearing_price = clearing_result["clearing_price"]
+            rl_cleared = clearing_result["rl_cleared"]
+
+            if clearing_price <= 0.0 and historical_load_mw > 1.0:
+                if clearing_result["total_cleared"] < historical_load_mw - 1e-6:
+                    clearing_price = max(float(price_val), 1.0)
+
+            rewards = []
+            for i, ag in enumerate(agents):
+                ag_marginal_cost = ag.current_marginal_cost
+                ag_cleared = rl_cleared[i]
+                rewards.append((clearing_price - ag_marginal_cost) * ag_cleared)
+
+            total_rl_cleared = sum(rl_cleared)
+            rho_for_metrics = total_rl_cleared / historical_load_mw if historical_load_mw > 0 else 0.0
+
+            if args.risk_penalty_lambda > 0.0:
+                for i, clip_info in enumerate(clip_infos):
+                    if bool(clip_info.get("clipped", False)):
+                        orig_notional = float(clip_info["original_notional"])
+                        if max_notional > 1e-12:
+                            severity = max(0.0, (orig_notional - max_notional) / max_notional)
+                        else:
+                            severity = 0.0
+                        penalty = float(args.risk_penalty_lambda * (1.0 + severity))
+                        rewards[i] -= penalty
+
+            metrics.log_step(
+                episode=ep_idx,
+                step=step_counter,
+                timestamp=ts,
+                action_indices=action_indices,
+                rewards=rewards,
+                clearing_price=clearing_price,
+                demand_mw=historical_load_mw,
+                rho=rho_for_metrics,
+                clip_infos=clip_infos,
+            )
+
+            next_obs, _, done, _info = state.step()
+            next_state_key = agents[0].state_to_key(next_obs)
+            state_key = next_state_key
+            obs = next_obs
+            step_counter += 1
+            if step_counter >= state.window_size:
+                done = True
+
+        metrics.close_episode(ep_idx)
+
+    return metrics
+
+
 def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = None) -> tuple[List[TabularQLearningAgent], State, ActionSpace, MarketModel, list[dict]]:
     # For ablation (temporary change for single run)
     if overrides is not None:
@@ -1090,6 +1267,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             delivery_row = state.raw_state_data.loc[delivery_time]
 
             price_val = delivery_row.get(PRICE_COL, np.nan)
+            # Coerce to scalar for NaN checks; PJM joins can sometimes leave this as a Series.
+            if isinstance(price_val, (pd.Series, np.ndarray)):
+                price_val = float(price_val.iloc[0]) if len(price_val) > 0 else np.nan
             if pd.isna(price_val):
                 # Try to find a valid price from recent history in lmp_df
                 valid_prices = lmp_df[PRICE_COL].dropna()
@@ -1104,6 +1284,9 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
         
             # Historical load for residual clearing
             historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            # Coerce to scalar; joins can yield a small Series here as well.
+            if isinstance(historical_load_mw, (pd.Series, np.ndarray)):
+                historical_load_mw = float(historical_load_mw.iloc[0]) if len(historical_load_mw) > 0 else np.nan
             if pd.isna(historical_load_mw):
                 # No valid load data for this delivery time - approaching data boundary
                 if args.verbose:
@@ -1269,9 +1452,41 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
             "cumulative_reward": float(cumulative_reward),
         })
 
-    # Export multi-agent metrics
+    # Export multi-agent metrics (training rollout mixes exploration/learning — not comparable to baseline)
     if args.export_metrics:
-        _ = export_multi_agent_metrics(metrics)     
+        _ = export_multi_agent_metrics(
+            metrics,
+            policy_label="rl_training_rollout",
+            seed=seed,
+            echo_comparison_summary=False,
+        )
+        eval_rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+        greedy_metrics = run_stack_greedy_eval(
+            agents,
+            state,
+            action_space,
+            market_model,
+            lmp_df,
+            forecast_series,
+            segmented_load_df,
+            episode_starts,
+            eval_rng,
+            marginal_cost_sampler,
+            max_notional,
+        )
+        greedy_dir = os.path.join("Analysis", "Metrics", "Multi_Agent", "GreedyEval")
+        _ = export_multi_agent_metrics(
+            greedy_metrics,
+            out_dir=greedy_dir,
+            policy_label="rl_greedy_eval",
+            seed=seed,
+            echo_comparison_summary=True,
+        )
+        print(
+            "[Metrics] Compare this run to stack baseline: match --n_episodes, --n_agents, --seed, "
+            "then compare printed mean_episode_return (or comparison_scalar CSV) "
+            "for baseline_* vs rl_greedy_eval — not rl_training_rollout."
+        )
     with open("q_table.pkl", "wb") as f:
         pickle.dump([ag.Q for ag in agents], f)
 
@@ -1281,6 +1496,297 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
     print("Training complete. Q-table and policy saved.")
     return agents, state, action_space, market_model, episode_logs
 
+
+def run_stack_aligned_baselines(
+    *,
+    baseline: str,
+    n_episodes: int,
+    markup: float,
+    quantile: float,
+    seed: int | None = None,
+) -> None:
+    """
+    Evaluate baseline policies in the same economic environment as train():
+    ERCOT-style load forecast injection, supply-stack clearing with opponents,
+    Henry Hub marginal cost draws per agent per step (when available),
+    action projection (max qty / max notional), and optional risk penalty.
+
+    Use the same --n_agents, --n_episodes, and --seed as training for comparability.
+    """
+    load_df, lmp_df = load_data()
+
+    n_agents = int(getattr(args, "n_agents", 1))
+    lmp_df = adjust_lmp_for_competition(
+        lmp_df,
+        n_agents=n_agents,
+        elasticity=float(args.lmp_competition_elasticity),
+        reference_agents=1,
+    )
+    if args.verbose and n_agents > 1:
+        original_mean = float(pd.to_numeric(load_data()[1][PRICE_COL], errors="coerce").mean())
+        adjusted_mean = float(lmp_df[PRICE_COL].mean())
+        print(
+            f"[LMP Adjustment] n_agents={n_agents} | elasticity={args.lmp_competition_elasticity} | "
+            f"original_mean_price={original_mean:.2f} | adjusted_mean_price={adjusted_mean:.2f}"
+        )
+
+    forecast_series = _load_ercot_forecast_series()
+    state, action_space, market_model = build_world(load_df, lmp_df)
+    apply_demand_scale_to_state(state, float(args.demand_scale))
+    state.apply()
+
+    fuel_mix_df = load_fuel_mix()
+    generators_df = load_active_generators()
+    segmented_load_df = segment_load_by_fuel_and_capacity(load_df, fuel_mix_df, generators_df)
+
+    if args.verbose:
+        print(f"[Stack baseline] n_agents={n_agents} | episodes={n_episodes} | baseline={baseline}")
+        print(f"[Stack] Loaded {len(generators_df)} generators across {len(fuel_mix_df)} timesteps")
+
+    if seed is not None:
+        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+
+    price_q = float(lmp_df[PRICE_COL].abs().quantile(args.max_notional_q))
+    max_notional = float(MAX_BID_QUANTITY_MW * price_q)
+
+    try:
+        henry_mc_values = _load_henry_hub_marginal_cost_values()
+        marginal_cost_sampler = _make_marginal_cost_sampler(henry_mc_values)
+        if args.verbose:
+            print(f"[Henry Hub] Loaded {henry_mc_values.size} marginal cost samples.")
+    except Exception as exc:
+        marginal_cost_sampler = None
+        if args.verbose:
+            print(
+                f"[Henry Hub] Failed to load marginal cost distribution ({exc}); "
+                "falling back to LMP-inferred marginal cost."
+            )
+
+    hist_policy: HistoricalQuantilePolicy | None = None
+    if baseline == "hist_quantile":
+        hist_policy = HistoricalQuantilePolicy(
+            action_space=action_space,
+            lmp_df=lmp_df,
+            quantile=quantile,
+            quantity_mw=MAX_BID_QUANTITY_MW,
+        )
+    elif baseline != "cost_plus":
+        raise ValueError(f"Unknown baseline: {baseline}")
+
+    metrics = MetricsTracker(
+        n_agents=n_agents,
+        agent_names=[f"Baseline_Agent_{i}" for i in range(n_agents)],
+        action_space=action_space,
+    )
+
+    if not isinstance(state.raw_state_data, pd.DataFrame):
+        raise ValueError("State raw_state_data has not been intialized")
+
+    safety_margin_hours = 48
+    max_safe_start = len(state.raw_state_data) - state.window_size - safety_margin_hours
+    episode_starts = list(range(0, max_safe_start + 1, state.step_hours))
+    episode_starts = episode_starts[:n_episodes]
+
+    if args.verbose:
+        print(
+            f"[Episode Boundary] raw_data_len={len(state.raw_state_data)} | "
+            f"window_size={state.window_size} | max_safe_start={max_safe_start} | "
+            f"episodes_to_run={len(episode_starts)}"
+        )
+
+    for ep_idx, start_idx in enumerate(episode_starts):
+        if args.verbose:
+            print(f"\n=== BASELINE EP {ep_idx + 1}/{len(episode_starts)} | start_idx={start_idx} ===")
+
+        cumulative_reward = 0.0
+        state.episode_start = start_idx
+        episode_start_ts = state.raw_state_data.index[start_idx]
+
+        h_end = episode_start_ts + pd.Timedelta(hours=FORECAST_HORIZON_HOURS)
+        f_slice = forecast_series.loc[
+            (forecast_series.index >= episode_start_ts) & (forecast_series.index <= h_end)
+        ]
+        forecast_df = f_slice.rename(FORECAST_LOAD_COL).reset_index()
+        inject_epsisode_forecast(state, forecast_df)
+        state.apply()
+        obs = state.reset(new_episode=False)
+
+        done = False
+        step_counter = 0
+
+        while not done:
+            agent_mcs: list[float] = []
+            if marginal_cost_sampler is not None:
+                for _ in range(n_agents):
+                    agent_mcs.append(float(marginal_cost_sampler(rng)))
+            else:
+                mc0 = float(market_model.params.marginal_cost)
+                agent_mcs = [mc0] * n_agents
+
+            market_model.params.marginal_cost = float(agent_mcs[0])
+
+            ts = state.timestamps[state.ptr]
+            step_obs: Observation = {"timestamp": ts}
+
+            action_indices: list[int] = []
+            clip_infos: list[dict] = []
+            for i in range(n_agents):
+                if baseline == "cost_plus":
+                    pol = CostPlusMarkupPolicy(
+                        action_space=action_space,
+                        marginal_cost=float(agent_mcs[i]),
+                        markup=float(markup),
+                        quantity_mw=MAX_BID_QUANTITY_MW,
+                    )
+                    raw_idx = int(pol.act(step_obs))
+                else:
+                    assert hist_policy is not None
+                    raw_idx = int(hist_policy.act(step_obs))
+
+                aidx, clip_info = action_space.project_to_feasible(
+                    raw_idx,
+                    max_quantity=MAX_BID_QUANTITY_MW,
+                    max_notional=max_notional,
+                )
+                action_indices.append(int(aidx))
+                clip_infos.append(clip_info)
+
+            delivery_time = ts + pd.Timedelta(hours=24)
+
+            if delivery_time not in state.raw_state_data.index:
+                if args.verbose:
+                    print(f"  [Data Boundary] delivery_time {delivery_time} not in data index, ending episode.")
+                done = True
+                break
+
+            delivery_row = state.raw_state_data.loc[delivery_time]
+
+            price_val = delivery_row.get(PRICE_COL, np.nan)
+            if isinstance(price_val, (pd.Series, np.ndarray)):
+                price_val = float(price_val.iloc[0]) if len(price_val) > 0 else np.nan
+            if pd.isna(price_val):
+                valid_prices = lmp_df[PRICE_COL].dropna()
+                if not valid_prices.empty:
+                    price_val = float(valid_prices.iloc[-1])
+                else:
+                    if args.verbose:
+                        print(f"  [Data Boundary] No valid price for {delivery_time}, ending episode.")
+                    done = True
+                    break
+
+            historical_load_mw = delivery_row.get(HIST_LOAD_COL, np.nan)
+            if isinstance(historical_load_mw, (pd.Series, np.ndarray)):
+                historical_load_mw = (
+                    float(historical_load_mw.iloc[0]) if len(historical_load_mw) > 0 else np.nan
+                )
+            if pd.isna(historical_load_mw):
+                if args.verbose:
+                    print(f"  [Data Boundary] No load data for {delivery_time}, ending episode.")
+                done = True
+                break
+            historical_load_mw = float(historical_load_mw)
+
+            opponent_bids = generate_opponent_bids_for_timestep(
+                delivery_time,
+                segmented_load_df,
+                lmp_df,
+                fuel_type_order=SUPPLY_STACK_ORDER,
+                price_noise_std=float(args.supply_stack_price_noise_std),
+                rng=rng,
+            )
+            rl_bids = extract_rl_bids_from_actions(action_indices, action_space)
+
+            if not opponent_bids and historical_load_mw > 0:
+                if args.verbose:
+                    print(
+                        f"  [Data Integrity Warning] No opponent bids for {delivery_time} "
+                        f"(load={historical_load_mw:.1f} MW). Ending episode."
+                    )
+                done = True
+                break
+
+            clearing_result = clear_market_with_stack_competition(
+                rl_bids,
+                opponent_bids,
+                total_historical_load=historical_load_mw,
+                clearing_price=None,
+            )
+            clearing_price = clearing_result["clearing_price"]
+            rl_cleared = clearing_result["rl_cleared"]
+
+            if clearing_price <= 0.0 and historical_load_mw > 1.0:
+                if clearing_result["total_cleared"] < historical_load_mw - 1e-6:
+                    clearing_price = max(float(price_val), 1.0)
+                elif args.verbose:
+                    print(
+                        f"  [Data Integrity] Clearing price=${clearing_price:.2f} for "
+                        f"{historical_load_mw:.1f} MW — stack fully cleared."
+                    )
+
+            rewards: list[float] = []
+            for i in range(n_agents):
+                ag_cleared = rl_cleared[i] if i < len(rl_cleared) else 0.0
+                rewards.append((clearing_price - agent_mcs[i]) * float(ag_cleared))
+
+            if args.risk_penalty_lambda > 0.0:
+                for i, clip_info in enumerate(clip_infos):
+                    if bool(clip_info.get("clipped", False)):
+                        orig_notional = float(clip_info["original_notional"])
+                        if max_notional > 1e-12:
+                            severity = max(0.0, (orig_notional - max_notional) / max_notional)
+                        else:
+                            severity = 0.0
+                        penalty = float(args.risk_penalty_lambda * (1.0 + severity))
+                        rewards[i] -= penalty
+
+            total_rl_cleared = sum(rl_cleared)
+            rho_for_metrics = total_rl_cleared / historical_load_mw if historical_load_mw > 0 else 0.0
+
+            metrics.log_step(
+                episode=ep_idx,
+                step=step_counter,
+                timestamp=ts,
+                action_indices=action_indices,
+                rewards=rewards,
+                clearing_price=clearing_price,
+                demand_mw=historical_load_mw,
+                rho=rho_for_metrics,
+                clip_infos=clip_infos,
+            )
+
+            cumulative_reward += float(np.sum(rewards))
+            if args.verbose:
+                print(
+                    f"[Baseline EP {ep_idx + 1} | Step {step_counter}] ts={ts} | "
+                    f"P={clearing_price:.2f} | demand={historical_load_mw:.2f} | rho={rho_for_metrics:.3f} | "
+                    f"actions={action_indices} | rewards={np.round(rewards, 4).tolist()} | "
+                    f"cum_total_reward={cumulative_reward:.4f}"
+                )
+
+            _next_obs, _, done, _info = state.step()
+            obs = _next_obs
+            step_counter += 1
+            if step_counter >= state.window_size:
+                done = True
+
+        metrics.close_episode(ep_idx)
+        if args.verbose:
+            print(f"Baseline episode {ep_idx + 1} finished after {step_counter} steps | cum_reward={cumulative_reward:.4f}")
+
+    if args.export_metrics:
+        out_dir = os.path.join("Analysis", "Metrics", "Multi_Agent", "Baseline_Stack")
+        export_multi_agent_metrics(
+            metrics,
+            out_dir=out_dir,
+            policy_label=f"baseline_{baseline}",
+            seed=seed,
+        )
+        print(f"[Baseline stack] Metrics exported under {out_dir}")
+
+    print("Baseline (stack-aligned) evaluation complete.")
+
+
 def run_baselines(
         *, # Keyward-only arguments since complex signature
         baseline: str,
@@ -1288,6 +1794,24 @@ def run_baselines(
         markup: float,
         quantile:float,
 ):
+    market = getattr(args, "baseline_market", "stack")
+    if market == "stack":
+        run_stack_aligned_baselines(
+            baseline=baseline,
+            n_episodes=n_episodes,
+            markup=markup,
+            quantile=quantile,
+            seed=getattr(args, "seed", None),
+        )
+        return
+
+    # Legacy single-agent simulator (clear_market_from_action + SARIMAX forecasts).
+    if int(getattr(args, "n_agents", 1)) != 1 and args.verbose:
+        print(
+            "[Warning] baseline_market=simple uses a single-agent shortcut; "
+            "n_agents>1 is ignored. Use default stack mode for multi-agent baselines."
+        )
+
     load_df, lmp_df = load_data()
     
     # Adjust LMP based on number of agents
@@ -1332,6 +1856,21 @@ def run_baselines(
         verbose = args.verbose
     )
 
+    # Optional CSV export for baselines (single-agent KPIs per episode).
+    if args.export_metrics:
+        out_dir = os.path.join("Analysis", "Metrics", "Baselines")
+        os.makedirs(out_dir, exist_ok=True)
+        timestamp = datetime.today().strftime("%Y%m%d_%H%M%S")
+        if baseline == "cost_plus":
+            tag = f"cost_plus_markup{markup:.1f}"
+        elif baseline == "hist_quantile":
+            tag = f"hist_quantile_q{quantile:.2f}"
+        else:
+            tag = baseline
+        out_path = os.path.join(out_dir, f"{tag}_baseline_metrics_{timestamp}.csv")
+        df.to_csv(out_path, index=False)
+        print(f"Saved baseline metrics CSV -> {out_path}")
+
 def parse_args():
     p = argparse.ArgumentParser()
     
@@ -1341,12 +1880,35 @@ def parse_args():
 
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
-    p.add_argument("--export_metrics", default=False, help="Enable verbose logging")
+    p.add_argument(
+        "--export_metrics",
+        action="store_true",
+        help=(
+            "Write Analysis/Metrics CSVs/plots and print headline performance "
+            "(comparison_scalar: mean_episode_return). "
+            "Use the same --n_episodes, --n_agents, and --seed for baseline then train to compare."
+        ),
+    )
 
     # baseline specific
     p.add_argument("--baseline", choices=["cost_plus", "hist_quantile"], default="cost_plus")
     p.add_argument("--markup", type=float, default=10.0, help="Markup for cost_plus baseline")
     p.add_argument("--quantile", type=float, default=0.7, help="Quantile for hist_quantile baseline")
+    p.add_argument(
+        "--baseline_market",
+        choices=["stack", "simple"],
+        default="stack",
+        help=(
+            "stack: same simulator as training (supply stack, ERCOT load forecast, Henry Hub costs). "
+            "simple: legacy single-agent clear_market_from_action + SARIMAX forecasts (not comparable to train)."
+        ),
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for training and stack-aligned baselines (optional, reproducibility).",
+    )
 
     # risk constraints
     p.add_argument("--max_notional_q", type=float, default=0.95, help="Quantile of |LMP| used to set max_notional")
@@ -1531,7 +2093,7 @@ if __name__ == "__main__":
         exit(0)
 
     if args.mode == "train":
-        train(n_episodes=args.n_episodes)
+        train(n_episodes=args.n_episodes, seed=args.seed)
     elif args.mode == "baseline":
         run_baselines(
             baseline=args.baseline,

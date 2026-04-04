@@ -77,6 +77,9 @@ def run_policy_on_episodes(
 
             delivery_row = state.raw_state_data.loc[delivery_time]
             forecast_price = delivery_row.get(PRICE_COL, np.nan)
+            # Coerce to scalar; PJM joins can leave this as a small Series.
+            if isinstance(forecast_price, (pd.Series, np.ndarray)):
+                forecast_price = float(forecast_price.iloc[0]) if len(forecast_price) > 0 else np.nan
             if pd.isna(forecast_price):
                 # fallback: last known price in lmp_df
                 forecast_price = float(lmp_df[PRICE_COL].iloc[-1])

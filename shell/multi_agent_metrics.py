@@ -185,21 +185,74 @@ class MetricsTracker:
         return pd.DataFrame(self._episode_summaries).set_index("episode")
 
     def agent_kpi_df(self) -> pd.DataFrame:
-        """Per-agent KPI table, producing mean over all episodes."""
+        """
+        Per-agent KPI table. Most columns are the mean over episodes.
+        total_reward is the sum of per-episode totals (full-run reward per agent).
+        mean_episode_total_reward is the mean of those per-episode totals.
+        """
         edf = self.episode_summary_df()
         if edf.empty:
             return pd.DataFrame()
 
         records = []
         for i in range(self.n_agents):
-            cols = {k: v for k, v in edf.items() if k.startswith(f"agent_{self.agent_names[i]}_")}
+            prefix = f"agent_{self.agent_names[i]}_"
+            cols = {k: v for k, v in edf.items() if k.startswith(prefix)}
             if not cols:
                 continue
-            row = {"agent": i}
-            row.update({k.replace(f"agent_{self.agent_names[i]}_", ""): float(np.mean(v)) for k, v in cols.items()})
+            row: dict = {"agent": i}
+            for k, v in cols.items():
+                short = k.replace(prefix, "")
+                if short == "total_reward":
+                    row["total_reward"] = float(np.sum(v))
+                    row["mean_episode_total_reward"] = float(np.mean(v))
+                else:
+                    row[short] = float(np.mean(v))
             records.append(row)
 
         return pd.DataFrame(records).set_index("agent")
+
+    def policy_comparison_row(
+        self,
+        policy_label: str,
+        *,
+        seed: int | None = None,
+    ) -> dict:
+        """
+        Single-row summary for comparing runs (e.g. baseline vs RL greedy eval).
+        Uses per-episode totals from episode_summary_df (mean over episodes), then
+        averages across agents so multi-agent runs get one headline number.
+
+        Primary field for apples-to-apples comparison: mean_episode_return
+        — for each agent, mean of per-episode total reward; then averaged across agents
+        (higher is better; same units as episode total in episode_metrics).
+        """
+        edf = self.episode_summary_df()
+        if edf.empty:
+            return {
+                "policy": policy_label,
+                "seed": seed if seed is not None else "",
+                "n_episodes": 0,
+                "mean_episode_return": float("nan"),
+                "mean_step_reward": float("nan"),
+            }
+        episodic_means: list[float] = []
+        step_means: list[float] = []
+        for i in range(self.n_agents):
+            col_t = f"agent_{self.agent_names[i]}_total_reward"
+            col_m = f"agent_{self.agent_names[i]}_mean_reward"
+            if col_t in edf.columns:
+                episodic_means.append(float(edf[col_t].mean()))
+            if col_m in edf.columns:
+                step_means.append(float(edf[col_m].mean()))
+        row = {
+            "policy": policy_label,
+            "seed": seed if seed is not None else "",
+            "n_episodes": int(len(edf)),
+            "mean_episode_return": float(np.mean(episodic_means)) if episodic_means else float("nan"),
+            "mean_step_reward": float(np.mean(step_means)) if step_means else float("nan"),
+        }
+        return row
 
     def bid_distribution_df(self) -> pd.DataFrame:
         """
@@ -340,12 +393,35 @@ def export_episode_csv(metrics, path="episode_metrics.csv"):
 
 def export_agent_csv(metrics, path="agent_kpis.csv"):
     """
-    One row per agent with the following columnsolumns: mean_reward, std_reward, clip_rate, action_entropy.
-    These are all averaged over the episodes.
+    One row per agent. total_reward is summed over all episodes; mean_episode_total_reward and
+    other KPI fields are means over episodes (see MetricsTracker.agent_kpi_df).
     """
     df = metrics.agent_kpi_df()
     df.to_csv(path)
     print(f"Saved agent CSV    -> {path}")
+    return path
+
+
+def export_comparison_scalar_csv(
+    metrics,
+    path: str,
+    *,
+    policy_label: str,
+    seed: int | None = None,
+    echo_summary: bool = True,
+):
+    """One-row CSV: compare baseline vs RL using mean_episode_return (see policy_comparison_row)."""
+    row = metrics.policy_comparison_row(policy_label, seed=seed)
+    pd.DataFrame([row]).to_csv(path, index=False)
+    print(f"Saved comparison scalar -> {path}")
+    if echo_summary:
+        val = row["mean_episode_return"]
+        val_str = f"{val:.6g}" if isinstance(val, (int, float)) and np.isfinite(val) else "nan"
+        seed_disp = row["seed"] if row["seed"] != "" else "None"
+        print(
+            f"[Performance] policy={policy_label} | mean_episode_return={val_str} "
+            f"| n_episodes={row['n_episodes']} | n_agents={metrics.n_agents} | seed={seed_disp} | csv={path}"
+        )
     return path
 
 def export_competition_csv(metrics, path="competition_table.csv"):
@@ -367,12 +443,14 @@ def plot_rewards(metrics, path="episode_rewards.png"):
                     color=color, linewidth=2)
 
     ax.set(title="Reward per Episode", xlabel="Episode", ylabel="Total Reward")
-    ax.legend(
-        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
-        fontsize=7,
-        loc="upper right",
-        framealpha=0.5,
-    )
+    h, lab = ax.get_legend_handles_labels()
+    if h:
+        ax.legend(
+            ncol=max(1, metrics.n_agents // 5),
+            fontsize=7,
+            loc="upper right",
+            framealpha=0.5,
+        )
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -396,7 +474,9 @@ def plot_clearing_price(metrics, path="clearing_price.png"):
 
     ax.set(title="Market Clearing Price per Episode",
            xlabel="Episode", ylabel="Price ($/MWh)")
-    ax.legend()
+    h, _ = ax.get_legend_handles_labels()
+    if h:
+        ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -420,13 +500,6 @@ def plot_bid_distributions(metrics, path="bid_distributions.png"):
         ax.set(title=f"{metrics.agent_names[i]} — Bid Distribution",
                xlabel="Action Index", ylabel="Count")
         ax.grid(alpha=0.3, axis="y")
-
-    ax.legend(
-        ncol=max(1, metrics.n_agents // 5),  # wrap into columns
-        fontsize=7,
-        loc="upper right",
-        framealpha=0.5,
-    )
 
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -468,8 +541,10 @@ def plot_stability(metrics, path="stability.png"):
             xlabel="Episode", ylabel="Normalised Entropy")
 
     for ax in (ax1, ax2, ax3):
-        ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
-                  loc="upper right", framealpha=0.5)
+        h, _ = ax.get_legend_handles_labels()
+        if h:
+            ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
+                      loc="upper right", framealpha=0.5)
         ax.grid(alpha=0.3)
 
     fig.tight_layout()
@@ -487,24 +562,38 @@ def plot_learning_rates(metrics, path="learning_rates.png"):
                     color=_agent_color(i, metrics.n_agents), linewidth=1.5)
     ax.set(title="Mean Harmonic Learning Rate per Episode",
            xlabel="Episode", ylabel="Alpha")
-    ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
-              loc="upper right", framealpha=0.5)
+    h, _ = ax.get_legend_handles_labels()
+    if h:
+        ax.legend(ncol=max(1, metrics.n_agents // 5), fontsize=7,
+                  loc="upper right", framealpha=0.5)
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
     return path
 
-def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metrics", "Multi_Agent")):
+def export_multi_agent_metrics(
+    metrics,
+    out_dir: str | None = None,
+    *,
+    policy_label: str | None = None,
+    seed: int | None = None,
+    echo_comparison_summary: bool = True,
+):
     """
-    Run all exports into out_dir.
+    Run all exports into out_dir (default: Analysis/Metrics/Multi_Agent).
+    If policy_label is set, writes comparison_scalar_{time}.csv with one headline row
+    (mean_episode_return) for comparing baseline vs RL greedy evaluation.
+    When echo_comparison_summary is True, also prints that metric to the terminal.
     """
+    if out_dir is None:
+        out_dir = os.path.join("Analysis", "Metrics", "Multi_Agent")
     os.makedirs(out_dir, exist_ok=True)
     p = lambda fname: os.path.join(out_dir, fname)
 
     current_time = datetime.today().strftime("%Y%m%d_%H%M%S")
 
-    return {
+    out: dict = {
         "episode_csv":        export_episode_csv(metrics,        p(f"episode_metrics_{current_time}.csv")),
         "agent_csv":          export_agent_csv(metrics,          p(f"agent_kpis_{current_time}.csv")),
         "rewards_plot":       plot_rewards(metrics,              p(f"episode_rewards_{current_time}.png")),
@@ -513,5 +602,14 @@ def export_multi_agent_metrics(metrics, out_dir=os.path.join("Analysis", "Metric
         "competition_csv": export_competition_csv(metrics, p(f"competition_table_{current_time}.csv")),
         "stability_csv":  export_stability_csv(metrics, p(f"stability_{current_time}.csv")),
         "stability_plot": plot_stability(metrics,        p(f"stability_{current_time}.png")),
-        "learning_rate_plot": plot_learning_rates(metrics, p(f"learning_rates_{current_time}.png"))
+        "learning_rate_plot": plot_learning_rates(metrics, p(f"learning_rates_{current_time}.png")),
     }
+    if policy_label is not None:
+        out["comparison_scalar_csv"] = export_comparison_scalar_csv(
+            metrics,
+            p(f"comparison_scalar_{current_time}.csv"),
+            policy_label=policy_label,
+            seed=seed,
+            echo_summary=echo_comparison_summary,
+        )
+    return out

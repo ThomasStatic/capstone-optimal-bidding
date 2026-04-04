@@ -1,31 +1,36 @@
 import matplotlib.pyplot as plt
 
-from market_loads_api import ISODemandController
-from market_model import MarketModel, MarketParams
-from tabular_q_agent import TabularQLearningAgent
-from rl_metrics_tabular import RLMetricsTrackerTabular
-from linear_approximator import PRICE_COL
+from shell.api_controllers.market_loads_api import ISODemandController
+from shell.market_model import MarketModel, MarketParams
+from shell.tabular_q_agent import TabularQLearningAgent
+from shell.rl_metrics_tabular import RLMetricsTrackerTabular
+from shell.linear_approximator import PRICE_COL
 
-from main import (
+import shell.main as main
+from shell.main import (
     ISO,
     START_DATE,
     END_DATE,
-    N_EPSIODES,
-    MAX_STEPS_PER_EPISODE,
-    read_lmp_data,
-    make_state,
+    build_state_and_discretizers,
+    load_data,
     make_action_space,
 )
 
+# Create and register a global args object so functions in shell.main
+# that rely on module-level `args` (e.g., build_state_and_discretizers)
+# work correctly when imported.
+args = main.parse_args()
+main.args = args
+
+N_EPSIODES = args.n_episodes
+MAX_STEPS_PER_EPISODE = 500
+
 
 def train_with_metrics(show_plots: bool = True):
-    historic_load_api = ISODemandController(START_DATE, END_DATE, ISO)
-    historic_loads = historic_load_api.get_market_loads()
+    # load_data() returns (load_df, lmp_df)
+    load_df, lmp_df = load_data()
 
-    forecast_df = None
-
-    lmp_df = read_lmp_data()
-    state = make_state(historic_loads, lmp_df, forecast_df)
+    state, _ = build_state_and_discretizers(load_df, lmp_df)
     action_space = make_action_space(lmp_df)
 
     market_params = MarketParams(
@@ -40,6 +45,12 @@ def train_with_metrics(show_plots: bool = True):
 
     metrics = RLMetricsTrackerTabular(num_actions=action_space.n_actions)
 
+    # Debug buffers to inspect economic feasibility on this ISO.
+    clearing_prices: list[float] = []
+    bid_prices: list[float] = []
+    cleared_quantities: list[float] = []
+    rewards: list[float] = []
+
     for episode in range(N_EPSIODES):
         observation = state.reset(new_episode=(episode > 0))
         state_key = agent.state_to_key(observation)
@@ -52,15 +63,38 @@ def train_with_metrics(show_plots: bool = True):
             action = agent.select_action(state_key)
             episode_actions.append(action)
 
-            current_time = state.current_time()
-            if state.raw_state_data is not None:
+            current_time = state.get_current_time()
+            if state.raw_state_data is not None and current_time is not None:
                 raw_current_row = state.raw_state_data.loc[current_time]
-                forecast_price = raw_current_row[PRICE_COL]
+                forecast_price_val = raw_current_row[PRICE_COL]
+                # Ensure we pass a scalar float into the market model.
+                try:
+                    forecast_price = float(forecast_price_val)
+                except (TypeError, ValueError):
+                    # If conversion fails (e.g., all NaNs), skip this step.
+                    continue
 
-                _, _, reward = market_model.clear_market_from_action(
+                # Decode the bid associated with this action.
+                bid_price, bid_qty = action_space.decode_to_values(action)
+
+                clearing_price, cleared_qty, reward = market_model.clear_market_from_action(
                     action,
                     forecast_price,
                 )
+
+                # Per-step debug print to see economics.
+                print(
+                    f"t={t} | LMP={forecast_price:.2f} | "
+                    f"bid_price={bid_price:.2f} | qty={bid_qty:.2f} | "
+                    f"cleared={cleared_qty:.2f} | "
+                    f"mc={market_params.marginal_cost:.2f} | "
+                    f"reward={reward:.6f}"
+                )
+
+                clearing_prices.append(float(clearing_price))
+                bid_prices.append(float(bid_price))
+                cleared_quantities.append(float(cleared_qty))
+                rewards.append(float(reward))
 
                 next_observation, _, done, _ = state.step(action)
                 next_state_key = None if done else agent.state_to_key(next_observation)
@@ -95,6 +129,21 @@ def train_with_metrics(show_plots: bool = True):
         )
 
     print("Training with metrics complete.")
+
+    # Basic diagnostics: is profit even achievable under this ISO config?
+    if rewards:
+        avg_reward = float(sum(rewards) / len(rewards))
+        avg_clearing = float(sum(clearing_prices) / len(clearing_prices))
+        avg_bid = float(sum(bid_prices) / len(bid_prices))
+        avg_cleared_qty = float(sum(cleared_quantities) / len(cleared_quantities))
+        positive_steps = sum(1 for r in rewards if r > 0)
+        print("\n=== PJM profitability diagnostics ===")
+        print(f"Steps observed: {len(rewards)}")
+        print(f"Avg clearing price: {avg_clearing:.2f}")
+        print(f"Avg bid price:      {avg_bid:.2f}")
+        print(f"Avg cleared qty:    {avg_cleared_qty:.2f} MW")
+        print(f"Avg reward/step:    {avg_reward:.6f}")
+        print(f"Fraction steps with positive reward: {positive_steps/len(rewards):.4f}")
 
     if show_plots:
         plot_metrics(metrics, action_space)

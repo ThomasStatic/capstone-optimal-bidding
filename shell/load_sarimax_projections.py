@@ -94,10 +94,14 @@ class SARIMAXLoadProjections:
         print("SARIMAX model fitted.")
         #print(fitted_model.summary())
 
-        # Forecast the next 24 * 7 hours
+        # Forecast the next 24 * 7 hours (one week).
+        # When we have fewer exogenous rows than forecast steps (e.g. short PJM histories),
+        # statsmodels requires that `steps` not exceed the available exog rows.
         steps = 24 * 7
 
         if exog_te is not None and not exog_te.empty:
+            max_steps = len(exog_te)
+            steps = min(steps, max_steps)
             exog_future = exog_te.iloc[:steps].astype(float)
         else:
             exog_future = None
