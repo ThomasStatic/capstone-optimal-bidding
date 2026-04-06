@@ -1,25 +1,38 @@
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from matplotlib import pyplot as plt
 import pandas as pd
+
+
+def _normalize_lambdas(values: Iterable[float]) -> list[float]:
+    """Return a deduplicated lambda list while always keeping a 0.0 baseline."""
+    ordered: list[float] = []
+    for value in [0.0, *values]:
+        lam = float(value)
+        if lam not in ordered:
+            ordered.append(lam)
+    return ordered
 
 
 @dataclass
 class RiskAblationConfig:
     seeds: int = 5
     episodes: int = 50
-    lambda_on: float = 1.0
+    lambdas: tuple[float, ...] | list[float] = (0.0, 0.25, 0.5, 1.0)
     out_csv: str = "risk_ablation.csv"
     out_png: str = "risk_ablation.png"
 
 def run_risk_constraint_ablation(*, train_fn: Callable, args: Any, cfg: RiskAblationConfig) -> None:
-    """Ablation study for risk_penalty_lambda = 0.0 vs risk_penalty_lambda = <some constant>"""
+    """Ablation study for multiple risk_penalty_lambda values on a single plot."""
     rows: list[dict] = []
 
     conditions = [
-        {"risk_penalty_lambda": 0.0, "label": "risk_penalty_lambda=0.0"},
-        {"risk_penalty_lambda": cfg.lambda_on, "label": f"risk_penalty_lambda={cfg.lambda_on}"},
+        {
+            "risk_penalty_lambda": lam,
+            "label": f"risk_penalty_lambda={lam:g}",
+        }
+        for lam in _normalize_lambdas(cfg.lambdas)
     ]
 
     for cond in conditions:

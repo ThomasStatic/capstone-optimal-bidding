@@ -44,11 +44,14 @@ class TabularQLearningAgent:
     
     def _ensure_state(self, key: StateKey) -> None:
 
-        # Cold start
-        if key not in self.Q:
-            self.Q[key] = np.zeros(self.num_actions, dtype=float)
+        # If the state is already known, never overwrite learned values.
+        if key in self.Q:
+            return
 
-        # Warm start
+        # Cold start
+        self.Q[key] = np.zeros(self.num_actions, dtype=float)
+
+        # Optional agent-level warm start for newly seen states only.
         if self.warm_start_enabled is True and self.warm_start_action is not None:
             a0 = int(self.warm_start_action)
             if 0 <= a0 < self.num_actions:

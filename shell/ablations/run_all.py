@@ -10,7 +10,7 @@ from shell.ablations.warm_start import WarmStartAblationConfig, run_warm_start_a
 class AllAblationsConfig:
     seeds: int
     episodes: int
-    risk_lambda_on: float = 1.0
+    risk_lambdas: tuple[float, ...] | list[float] = (0.0, 0.25, 0.5, 1.0)
 
 def run_all_ablations(*, train_fn: Callable, args: Any, cfg: AllAblationsConfig) -> None:
     """
@@ -37,7 +37,7 @@ def run_all_ablations(*, train_fn: Callable, args: Any, cfg: AllAblationsConfig)
         cfg=RiskAblationConfig(
             seeds=cfg.seeds,
             episodes=cfg.episodes,
-            lambda_on=cfg.risk_lambda_on,
+            lambdas=cfg.risk_lambdas,
             out_csv="risk_ablation.csv",
             out_png="risk_ablation.png",
         ),

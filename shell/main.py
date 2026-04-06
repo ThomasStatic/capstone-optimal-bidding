@@ -1066,17 +1066,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 "temperature": temp,
             }
 
-            action_indices, clip_infos = select_and_project_actions(
-                agents,
-                step_obs,
-                action_space,
-                max_quantity=MAX_BID_QUANTITY_MW,
-                max_notional=max_notional,
-                frozen=bool(args.policy_freeze_enabled),
-                agent_policies=agent_policies,
-                rng=rng,
-            )
-
             # Bidding 24 hours in advance
             delivery_time = ts + pd.Timedelta(hours=24)
 
@@ -1112,6 +1101,31 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                 break
             
             historical_load_mw = float(historical_load_mw)
+
+            # Warm start unseen states before the first action is selected.
+            if args.warm_start_q:
+                baseline_action_idx = int(cost_plus_policy.act(step_obs))
+                baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
+                margin = 1.0
+                for ag in agents:
+                    ag.warm_start_state(
+                        state_key,
+                        preferred_action=baseline_action_idx,
+                        preferred_q=baseline_reward + margin,
+                        other_q=baseline_reward - margin,
+                        only_if_unseen=True,
+                    )
+
+            action_indices, clip_infos = select_and_project_actions(
+                agents,
+                step_obs,
+                action_space,
+                max_quantity=MAX_BID_QUANTITY_MW,
+                max_notional=max_notional,
+                frozen=bool(args.policy_freeze_enabled),
+                agent_policies=agent_policies,
+                rng=rng,
+            )
 
             # Generate opponent bids for this delivery time
             # Supply stack order (top to bottom): Wind / Solar / Hydro / Nuclear / Biomass / Coal / Natural Gas / Other
@@ -1160,21 +1174,6 @@ def train(n_episodes = 20, *, seed: int | None = None, overrides: dict | None = 
                     if args.verbose:
                         print(f"  [Data Integrity] Clearing price=${clearing_price:.2f} for {historical_load_mw:.1f} MW load - "
                               "market fully cleared, accepting this price from stack result.")
-
-            # Warm start Q-values if needed
-            if args.warm_start_q:
-                baseline_action_idx = int(cost_plus_policy.act(step_obs))
-                for ag in agents:
-                    if state_key not in ag.Q:
-                        baseline_reward = market_model.peek_reward_from_action(baseline_action_idx, float(price_val))
-                        margin = 1.0
-                        ag.warm_start_state(
-                            state_key,
-                            preferred_action=baseline_action_idx,
-                            preferred_q=baseline_reward + margin,
-                            other_q=baseline_reward - margin,
-                            only_if_unseen=True,
-                        )
 
             # Calculate rewards based on cleared quantities, looping across each agent
             rewards = []
@@ -1385,7 +1384,18 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--temperature_min", type=float, default=0.1)
     p.add_argument("--temperature_decay", type=float, default=0.995)
-    p.add_argument("--risk_lambda_on", type=float, default=1.0)
+    p.add_argument(
+        "--risk_lambda_on",
+        type=float,
+        default=1.0,
+        help="Single nonzero lambda for the legacy two-point risk ablation fallback.",
+    )
+    p.add_argument(
+        "--risk_lambdas",
+        type=str,
+        default="",
+        help="Comma-separated lambdas for the risk ablation plot, e.g. 0.0,0.1,0.25,0.5.",
+    )
 
     p.add_argument("--run_elasticity_perturbation", action="store_true", help="Run elasticity perturbation study and save CSV/plot.")
     p.add_argument("--elasticity_values", type=str, default="0.0,0.05,0.1,0.15,0.2", help="Comma-separated elasticity values for competition adjustment.")
@@ -1458,10 +1468,17 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     if args.run_all_ablations or args.run_master_ablations:
+        if args.risk_lambdas.strip():
+            risk_lambdas = [float(x.strip()) for x in args.risk_lambdas.split(",") if x.strip()]
+        elif args.risk_penalty_lambda != 0.0:
+            risk_lambdas = [0.0, float(args.risk_penalty_lambda)]
+        else:
+            risk_lambdas = [0.0, float(args.risk_lambda_on)]
+
         cfg = AllAblationsConfig(
             seeds=args.ablation_seeds,
             episodes=args.ablation_episodes,
-            risk_lambda_on=args.risk_penalty_lambda
+            risk_lambdas=risk_lambdas,
         )
         run_all_ablations(train_fn=train, args=args, cfg=cfg)
 
